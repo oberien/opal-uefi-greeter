@@ -74,7 +74,7 @@ pub struct Config {
 impl Config {
     pub fn parse(bytes: &[u8]) -> Result<Self> {
         let verbs = verbs(str::from_utf8(bytes).or(Err(Error::ConfigNonUtf8))?);
-        let args = required(&verbs, "arg", Some(' '))?;
+        let args = optional(&verbs, "arg", Some(' ')).unwrap_or(String::new());
         Ok(Self {
             image: required(&verbs, "image", Some('\\'))?,
             args,
