@@ -147,8 +147,7 @@ impl<'d> OpalSession<'d> {
         self.device
             .proto()
             .secure_send(self.protocol, com_id, buffer.as_mut())
-            .map_err(|e| e.status())?
-            .log();
+            .map_err(|e| e.status())?;
 
         let mut buffer = crate::util::alloc_uninit_aligned(2048, self.device.proto().align());
 
@@ -159,8 +158,7 @@ impl<'d> OpalSession<'d> {
             self.device
                 .proto()
                 .secure_recv(self.protocol, com_id, &mut buffer)
-                .map_err(|e| e.status())?
-                .log();
+                .map_err(|e| e.status())?;
 
             header = core::ptr::read(buffer.as_ptr() as _);
 

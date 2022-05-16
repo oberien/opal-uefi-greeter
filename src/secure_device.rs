@@ -1,4 +1,3 @@
-use crate::BootServicesExt;
 use alloc::boxed::Box;
 use bitflags::bitflags;
 use core::mem::MaybeUninit;
@@ -72,7 +71,7 @@ pub struct SecureDevice {
 
 impl SecureDevice {
     pub fn new(handle: Handle, mut device: impl SecureProtocol + 'static) -> uefi::Result<Self> {
-        let info = recv_info(&mut device)?.log();
+        let info = recv_info(&mut device)?;
         let is_eprise = info.enterprise.is_some();
         let com_id = match info.enterprise.or(info.opal_v2) {
             Some(x) => x,
@@ -90,11 +89,9 @@ impl SecureDevice {
 
     pub fn reconnect_controller(&self, st: &mut SystemTable<Boot>) -> uefi::Result {
         st.boot_services()
-            .disconnect_controller(self.handle, None, None)?
-            .log();
+            .disconnect_controller(self.handle, None, None)?;
         st.boot_services()
-            .connect_controller(self.handle, None, None, true)?
-            .log();
+            .connect_controller(self.handle, None, None, true)?;
         Ok(().into())
     }
 
@@ -112,7 +109,6 @@ impl SecureDevice {
 
     pub fn recv_locked(&mut self) -> uefi::Result<bool> {
         Ok(recv_info(self.proto())?
-            .log()
             .locking
             .map_or(false, |locking| {
                 locking.contains(LockingFlags::LOCKED) || !locking.contains(LockingFlags::MBR_DONE)
@@ -132,7 +128,7 @@ fn recv_info(proto: &mut dyn SecureProtocol) -> uefi::Result<SecureDeviceInfo> {
     let mut buffer = unsafe { crate::util::alloc_uninit_aligned(1024, proto.align()) };
 
     // level 0 discovery
-    unsafe { proto.secure_recv(1, 1, buffer.as_mut()) }?.log();
+    unsafe { proto.secure_recv(1, 1, buffer.as_mut()) }?;
 
     let buffer = unsafe { buffer.assume_init() };
 

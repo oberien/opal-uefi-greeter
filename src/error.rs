@@ -1,6 +1,6 @@
 use crate::opal::StatusCode;
 use alloc::string::String;
-use uefi::{ResultExt, Status};
+use uefi::Status;
 
 pub type Result<T = ()> = core::result::Result<T, Error>;
 
@@ -57,7 +57,7 @@ macro_rules! info {
 
 impl<T, D: core::fmt::Debug> ResultFixupExt<T> for uefi::Result<T, D> {
     fn fix(self, info: &'static str) -> Result<T> {
-        self.log_warning()
+        self
             .map_err(|e| Error::Uefi(e.status(), info))
     }
 }

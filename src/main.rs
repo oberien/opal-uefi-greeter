@@ -2,7 +2,6 @@
 #![no_main]
 #![feature(abi_efiapi)]
 #![feature(negative_impls)]
-#![feature(const_fn_trait_bound)]
 #![feature(new_uninit)]
 #![feature(maybe_uninit_slice)]
 #![feature(bool_to_option)]
@@ -14,6 +13,7 @@ extern crate alloc;
 extern crate rlibc;
 
 use alloc::{string::String, vec::Vec};
+use uefi::table::boot::LoadImageSource;
 use core::{convert::TryFrom, fmt::Write, time::Duration};
 
 use uefi::{
@@ -34,7 +34,6 @@ use uefi::{
 };
 
 use crate::{
-    boot_services_ext::BootServicesExt,
     config::Config,
     error::{Error, OpalError, Result, ResultFixupExt},
     nvme_device::NvmeDevice,
@@ -44,7 +43,6 @@ use crate::{
     util::sleep,
 };
 
-pub mod boot_services_ext;
 pub mod config;
 pub mod dp_to_text;
 pub mod error;
@@ -56,7 +54,7 @@ pub mod util;
 
 #[entry]
 fn main(image_handle: Handle, mut st: SystemTable<Boot>) -> Status {
-    if uefi_services::init(&mut st).log_warning().is_err() {
+    if uefi_services::init(&mut st).is_err() {
         log::error!("Failed to initialize UEFI services");
         log::error!("Shutting down in 10s..");
         sleep(Duration::from_secs(10));
@@ -129,10 +127,11 @@ fn run(image_handle: Handle, st: &mut SystemTable<Boot>) -> Result {
         .fix(info!())?;
     let dp = unsafe { &mut *dp.get() };
 
-    let image = config.image;
+    let image = CString16::try_from(config.image.as_str()).or(Err(Error::ConfigArgsBadUtf16))?;
+
     let buf = read_file(st, handle, &image)
         .fix(info!())?
-        .ok_or(Error::ImageNotFound(image))?;
+        .ok_or(Error::ImageNotFound(config.image))?;
 
     if buf.get(0..2) != Some(&[0x4d, 0x5a]) {
         return Err(Error::ImageNotPeCoff);
@@ -140,7 +139,7 @@ fn run(image_handle: Handle, st: &mut SystemTable<Boot>) -> Result {
 
     let loaded_image_handle = st
         .boot_services()
-        .load_image(false, image_handle, Some(dp), Some(&buf))
+        .load_image(image_handle, LoadImageSource::FromFilePath { file_path: dp, from_boot_manager: false })
         .fix(info!())?;
     let loaded_image = st
         .boot_services()
@@ -149,7 +148,7 @@ fn run(image_handle: Handle, st: &mut SystemTable<Boot>) -> Result {
     let loaded_image = unsafe { &mut *loaded_image.get() };
 
     let args = CString16::try_from(&*config.args).or(Err(Error::ConfigArgsBadUtf16))?;
-    unsafe { loaded_image.set_load_options(args.as_ptr(), args.num_bytes() as _) };
+    unsafe { loaded_image.set_load_options(args.as_ptr() as *const u8, args.num_bytes() as _) };
 
     st.boot_services()
         .start_image(loaded_image_handle)
@@ -159,13 +158,12 @@ fn run(image_handle: Handle, st: &mut SystemTable<Boot>) -> Result {
 }
 
 fn config_stdout(st: &mut SystemTable<Boot>) -> uefi::Result {
-    st.stdout().reset(false)?.log();
+    st.stdout().reset(false)?;
 
     if let Some(mode) = st.stdout().modes().max_by_key(|m| {
-        let m = m.log();
         m.rows() * m.columns()
     }) {
-        st.stdout().set_mode(mode.split().1)?.log();
+        st.stdout().set_mode(mode)?;
     };
     Ok(().into())
 }
@@ -181,9 +179,9 @@ fn load_config(image_handle: Handle, st: &mut SystemTable<Boot>) -> Result<Confi
         .fix(info!())?;
     let device_handle = st
         .boot_services()
-        .locate_device_path::<SimpleFileSystem>(unsafe { &mut *device_path.get() })
+        .locate_device_path::<SimpleFileSystem>(unsafe { &mut &*device_path.get() })
         .fix(info!())?;
-    let buf = read_file(st, device_handle, "config")
+    let buf = read_file(st, device_handle, cstr16!("config"))
         .fix(info!())?
         .ok_or(Error::ConfigMissing)?;
     let config = Config::parse(&buf)?;
@@ -266,8 +264,8 @@ fn pretty_session<'d>(
 fn find_secure_devices(st: &mut SystemTable<Boot>) -> uefi::Result<Vec<SecureDevice>> {
     let mut result = Vec::new();
 
-    for handle in st.boot_services().find_handles::<BlockIO>()?.log() {
-        let blockio = st.boot_services().handle_protocol::<BlockIO>(handle)?.log();
+    for handle in st.boot_services().find_handles::<BlockIO>()? {
+        let blockio = st.boot_services().handle_protocol::<BlockIO>(handle)?;
 
         if unsafe { &mut *blockio.get() }
             .media()
@@ -278,21 +276,18 @@ fn find_secure_devices(st: &mut SystemTable<Boot>) -> uefi::Result<Vec<SecureDev
 
         let device_path = st
             .boot_services()
-            .handle_protocol::<DevicePath>(handle)?
-            .log();
-        let device_path = unsafe { &mut *device_path.get() };
+            .handle_protocol::<DevicePath>(handle)?;
+        let device_path = unsafe { &mut &*device_path.get() };
 
         if let Ok(nvme) = st
             .boot_services()
             .locate_device_path::<NvmExpressPassthru>(device_path)
-            .log_warning()
         {
             let nvme = st
                 .boot_services()
-                .handle_protocol::<NvmExpressPassthru>(nvme)?
-                .log();
+                .handle_protocol::<NvmExpressPassthru>(nvme)?;
 
-            result.push(SecureDevice::new(handle, NvmeDevice::new(nvme.get())?.log())?.log())
+            result.push(SecureDevice::new(handle, NvmeDevice::new(nvme.get())?)?)
         }
 
         // todo something like that:
@@ -343,33 +338,28 @@ fn find_boot_partition(st: &mut SystemTable<Boot>) -> Result<Handle> {
 fn read_file(
     st: &mut SystemTable<Boot>,
     device: Handle,
-    file: &str,
+    file: &CStr16,
 ) -> uefi::Result<Option<Vec<u8>>> {
     let sfs = st
         .boot_services()
-        .handle_protocol::<SimpleFileSystem>(device)?
-        .log();
+        .handle_protocol::<SimpleFileSystem>(device)?;
     let sfs = unsafe { &mut *sfs.get() };
 
     let file_handle = sfs
         .open_volume()?
-        .log()
-        .open(file, FileMode::Read, FileAttribute::empty())?
-        .log();
+        .open(&file, FileMode::Read, FileAttribute::empty())?;
 
-    if let FileType::Regular(mut f) = file_handle.into_type()?.log() {
-        let info = f.get_boxed_info::<FileInfo>()?.log();
+    if let FileType::Regular(mut f) = file_handle.into_type()? {
+        let info = f.get_boxed_info::<FileInfo>()?;
         let size = info.file_size() as usize;
         let ptr = st
             .boot_services()
-            .allocate_pool(MemoryType::LOADER_DATA, size)?
-            .log();
+            .allocate_pool(MemoryType::LOADER_DATA, size)?;
         let mut buf = unsafe { Vec::from_raw_parts(ptr, size, size) };
 
         let read = f
             .read(&mut buf)
-            .map_err(|_| uefi::Status::BUFFER_TOO_SMALL)?
-            .log();
+            .map_err(|_| uefi::Status::BUFFER_TOO_SMALL)?;
         buf.truncate(read);
         Ok(Some(buf).into())
     } else {

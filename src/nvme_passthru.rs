@@ -1,4 +1,5 @@
 use alloc::vec::Vec;
+use uefi::proto::device_path::FfiDevicePath;
 use core::mem::MaybeUninit;
 
 use bitflags::bitflags;
@@ -30,7 +31,7 @@ pub struct NvmExpressPassthru {
     build_device_path: unsafe extern "efiapi" fn(
         this: &NvmExpressPassthru,
         namespace_id: u32,
-        device_path: &mut *mut DevicePath,
+        device_path: &mut *mut FfiDevicePath,
     ) -> Status,
     get_namespace: unsafe extern "efiapi" fn(
         this: &NvmExpressPassthru,
@@ -90,10 +91,10 @@ impl NvmExpressPassthru {
         }
     }
 
-    pub fn build_device_path(&self, namespace_id: NamespaceId) -> uefi::Result<&mut DevicePath> {
+    pub fn build_device_path(&self, namespace_id: NamespaceId) -> uefi::Result<&DevicePath> {
         let mut device_path = null_mut();
         unsafe { (self.build_device_path)(self, namespace_id.to_u32(), &mut device_path) }
-            .into_with_val(|| unsafe { device_path.as_mut() }.unwrap())
+            .into_with_val(|| unsafe { DevicePath::from_ffi_ptr(device_path.as_mut().unwrap()) })
     }
 
     pub fn get_namespace(&self, device_path: &DevicePath) -> uefi::Result<NamespaceId> {

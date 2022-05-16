@@ -16,7 +16,7 @@ pub struct NvmeDevice {
 
 impl NvmeDevice {
     pub fn new(passthru: *mut NvmExpressPassthru) -> uefi::Result<NvmeDevice> {
-        let serial_num = recv_serial_num(passthru)?.log();
+        let serial_num = recv_serial_num(passthru)?;
         let align = unsafe { &mut *passthru }.mode().io_align as _;
         Ok(Self {
             passthru,
@@ -40,7 +40,7 @@ fn recv_serial_num(passthru: *mut NvmExpressPassthru) -> uefi::Result<Vec<u8>> {
         &command,
     );
 
-    unsafe { passthru.send(SendTarget::Controller, &mut packet) }?.log();
+    unsafe { passthru.send(SendTarget::Controller, &mut packet) }?;
 
     let serial_num = unsafe { MaybeUninit::slice_assume_init_ref(&data[4..24]) };
     Ok(serial_num.to_vec().into())
@@ -71,8 +71,7 @@ unsafe fn secure_protocol(
         &command,
     );
     (&mut *passthru)
-        .send(SendTarget::Controller, &mut packet)?
-        .log();
+        .send(SendTarget::Controller, &mut packet)?;
 
     Status::SUCCESS.into()
 }

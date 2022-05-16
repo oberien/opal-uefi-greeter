@@ -9,8 +9,8 @@ license = 'MIT'
 rlibc = '1.0'
 
 wchar = '0.11'
-uefi = { git = 'https://github.com/rust-osdev/uefi-rs', features = ['exts'] }
-uefi-services = { git = 'https://github.com/rust-osdev/uefi-rs' }
+uefi = { version = "0.16", features = ["exts", "logger"] }
+uefi-services = '0.13'
 
 bitflags = '1.2'
 seq-macro = '0.2'
@@ -20,7 +20,3 @@ sha-1 = { version = "0.9", default-features = false, features = ['force-soft'] }
 hmac = { version = "0.11", default-features = false }
 
 log = { version = '0.4', default-features = false }
-
-[patch.crates-io]
-uefi = { git = 'https://github.com/rust-osdev/uefi-rs' }
-uefi-macros = { git = 'https://github.com/rust-osdev/uefi-rs' }
