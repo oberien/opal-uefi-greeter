@@ -139,7 +139,7 @@ fn run(image_handle: Handle, st: &mut SystemTable<Boot>) -> Result {
 
     let loaded_image_handle = st
         .boot_services()
-        .load_image(image_handle, LoadImageSource::FromFilePath { file_path: dp, from_boot_manager: false })
+        .load_image(image_handle, LoadImageSource::FromBuffer { file_path: Some(dp), buffer: &buf })
         .fix(info!())?;
     let loaded_image = st
         .boot_services()
