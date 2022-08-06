@@ -3,14 +3,14 @@ use core::{fmt::Write, mem::size_of_val, time::Duration};
 
 use crate::{
     error::{Error, OpalError, Result},
-    opal::{
-        command::{OpalCommand, OpalCommandBuilder, OpalResponse},
-        method, tiny_atom, token, uid, LockingState, OpalHeader, SimpleToken, StatusCode, BS8,
+    low_level::opal::{
+        BS8,
+        command::{OpalCommand, OpalCommandBuilder, OpalResponse}, LockingState, method, OpalHeader, SimpleToken, StatusCode, tiny_atom, token, uid,
     },
-    secure_device::SecureDevice,
     token_list, token_name, tokens,
     util::sleep,
 };
+use crate::low_level::secure_device::SecureDevice;
 
 pub struct OpalSession<'d> {
     device: &'d mut SecureDevice,

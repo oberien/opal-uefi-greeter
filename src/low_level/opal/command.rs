@@ -1,5 +1,5 @@
 use crate::{
-    opal::{
+    low_level::opal::{
         tiny_atom, token, OpalHeader, PacketHeader, SimpleToken, SubpacketHeader, Token,
         TokenStream, BS8,
     },

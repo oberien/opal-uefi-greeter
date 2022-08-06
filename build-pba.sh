@@ -13,7 +13,7 @@ IMG=$(test -n "$1" && echo "$1" || echo pba.gptdisk)
 
 pushd "$(dirname "$(realpath "$0")")" || exit 1
 
-cargo b --release || exit 1
+cargo +nightly b --release || exit 1
 
 # 1mb for gpt stuff & align,
 # 1 remaining is more than enough for our image + config + remaining gpt stuff
@@ -56,5 +56,5 @@ sudo umount mnt || error
 rmdir mnt
 
 echo
-echo "Built the PBA image successfully"
+echo "Built the PBA image successfully as: ${IMG}"
 echo

@@ -4,7 +4,6 @@
 #![feature(negative_impls)]
 #![feature(new_uninit)]
 #![feature(maybe_uninit_slice)]
-#![feature(bool_to_option)]
 #![allow(clippy::missing_safety_doc)]
 
 #[macro_use]
@@ -12,111 +11,87 @@ extern crate alloc;
 // make sure to link this
 extern crate rlibc;
 
-use alloc::{string::String, vec::Vec};
+use alloc::vec::Vec;
 use uefi::table::boot::LoadImageSource;
-use core::{convert::TryFrom, fmt::Write, time::Duration};
+use core::{convert::TryFrom, fmt::Write};
 
 use uefi::{
+    CStr16,
+    CString16,
     prelude::*,
     proto::{
-        console::text::{Key, ScanCode},
         device_path::DevicePath,
         loaded_image::LoadedImage,
         media::{
-            block::BlockIO,
             file::{File, FileAttribute, FileInfo, FileMode, FileType},
             fs::SimpleFileSystem,
             partition::{GptPartitionType, PartitionInfo},
         },
-    },
-    table::{boot::MemoryType, runtime::ResetType},
-    CStr16, CString16,
+    }, table::{boot::MemoryType, runtime::ResetType},
 };
+use low_level::nvme_device::NvmeDevice;
+use low_level::nvme_passthru::*;
+use low_level::secure_device::SecureDevice;
 
 use crate::{
     config::Config,
     error::{Error, OpalError, Result, ResultFixupExt},
-    nvme_device::NvmeDevice,
-    nvme_passthru::*,
-    opal::{session::OpalSession, uid, LockingState, StatusCode},
-    secure_device::SecureDevice,
+    low_level::opal::{LockingState, session::OpalSession, StatusCode, uid},
     util::sleep,
 };
 
 pub mod config;
 pub mod dp_to_text;
 pub mod error;
-pub mod nvme_device;
-pub mod nvme_passthru;
-pub mod opal;
-pub mod secure_device;
 pub mod util;
+pub mod input;
+pub mod low_level;
+pub mod unlock_opal;
 
 #[entry]
 fn main(image_handle: Handle, mut st: SystemTable<Boot>) -> Status {
     if uefi_services::init(&mut st).is_err() {
         log::error!("Failed to initialize UEFI services");
-        log::error!("Shutting down in 10s..");
-        sleep(Duration::from_secs(10));
     }
     if let Err(err) = run(image_handle, &mut st) {
         log::error!("Error: {:?}", err);
-        log::error!("Shutting down in 10s..");
-        sleep(Duration::from_secs(10));
     }
+    log::error!("Encountered error. Reboot on Enter...");
+    let _ = input::line(&mut st);
     st.runtime_services()
-        .reset(ResetType::Shutdown, Status::SUCCESS, None)
+        .reset(ResetType::Cold, Status::SUCCESS, None)
 }
 
 fn run(image_handle: Handle, st: &mut SystemTable<Boot>) -> Result {
+    // set size of console
     config_stdout(st).fix(info!())?;
+    // disable watchdog
+    st.boot_services().set_watchdog_timer(0, 0x31337, None).fix(info!())?;
 
     let config = load_config(image_handle, st)?;
 
-    let devices = find_secure_devices(st).fix(info!())?;
+    let devices = unlock_opal::find_secure_devices(st).fix(info!())?;
 
     for mut device in devices {
-        if device.recv_locked().fix(info!())? {
-            // session mutably borrows the device
-            {
-                let mut prompt = config.prompt.as_deref().unwrap_or("password: ");
-                let mut session = loop {
-                    let password = read_password(st, prompt)?;
+        if !device.recv_locked().fix(info!())? {
+            continue;
+        }
+        let prompt = config.prompt.as_deref().unwrap_or("password: ");
+        let retry_prompt = config.retry_prompt.as_deref().unwrap_or("bad password, retry: ");
+        st.stdout().write_str(prompt).unwrap();
+        loop {
+            let password = input::password(st)?;
 
-                    let mut hash = vec![0; 32];
-
-                    // as in sedutil-cli, maybe will change
-                    pbkdf2::pbkdf2::<hmac::Hmac<sha1::Sha1>>(
-                        password.as_bytes(),
-                        device.proto().serial_num(),
-                        75000,
-                        &mut hash,
-                    );
-
-                    if let Some(s) =
-                        pretty_session(st, &mut device, &*hash, config.sed_locked_msg.as_deref())?
-                    {
-                        break s;
-                    }
-
-                    if config.clear_on_retry {
-                        st.stdout().clear().fix(info!())?;
-                    }
-
-                    prompt = config
-                        .retry_prompt
-                        .as_deref()
-                        .unwrap_or("bad password, retry: ");
-                };
-
-                session.set_mbr_done(true)?;
-                session.set_locking_range(0, LockingState::ReadWrite)?;
+            match unlock_opal::try_unlock_device(st, &config, &mut device, password)? {
+                Ok(()) => break,
+                Err(()) => (),
             }
 
-            // reconnect the controller to see
-            // the real partition pop up after unlocking
-            device.reconnect_controller(st).fix(info!())?;
-        }
+            if config.clear_on_retry {
+                st.stdout().clear().fix(info!())?;
+            }
+            st.stdout().write_str(retry_prompt).unwrap();
+        };
     }
 
     let handle = find_boot_partition(st)?;
@@ -160,11 +135,13 @@ fn run(image_handle: Handle, st: &mut SystemTable<Boot>) -> Result {
 fn config_stdout(st: &mut SystemTable<Boot>) -> uefi::Result {
     st.stdout().reset(false)?;
 
-    if let Some(mode) = st.stdout().modes().max_by_key(|m| {
-        m.rows() * m.columns()
+    if let Some(mode) = st.stdout().modes().min_by_key(|m| {
+        (m.rows() as i32 * m.columns() as i32 - 200*64).abs()
     }) {
+        log::info!("selected {mode:?}");
         st.stdout().set_mode(mode)?;
     };
+
     Ok(().into())
 }
 
@@ -190,125 +167,6 @@ fn load_config(image_handle: Handle, st: &mut SystemTable<Boot>) -> Result<Confi
     Ok(config)
 }
 
-fn write_char(st: &mut SystemTable<Boot>, ch: u16) -> Result {
-    let str = &[ch, 0];
-    st.stdout()
-        .output_string(unsafe { CStr16::from_u16_with_nul_unchecked(str) })
-        .fix(info!())
-}
-
-fn read_password(st: &mut SystemTable<Boot>, prompt: &str) -> Result<String> {
-    st.stdout().write_str(prompt).unwrap();
-
-    let mut wait_for_key = [unsafe { st.stdin().wait_for_key_event().unsafe_clone() }];
-
-    let mut data = String::with_capacity(32);
-    loop {
-        st.boot_services()
-            .wait_for_event(&mut wait_for_key)
-            .fix(info!())?;
-
-        match st.stdin().read_key().fix(info!())? {
-            Some(Key::Printable(k)) if [0xD, 0xA].contains(&u16::from(k)) => {
-                write_char(st, 0x0D)?;
-                write_char(st, 0x0A)?;
-                break Ok(data);
-            }
-            Some(Key::Printable(k)) if u16::from(k) == 0x8 => {
-                if data.pop().is_some() {
-                    write_char(st, 0x08)?;
-                }
-            }
-            Some(Key::Printable(k)) => {
-                write_char(st, '*' as u16)?;
-                data.push(k.into());
-            }
-            Some(Key::Special(ScanCode::ESCAPE)) => {
-                st.runtime_services()
-                    .reset(ResetType::Shutdown, Status::SUCCESS, None)
-            }
-            _ => {}
-        }
-    }
-}
-
-fn pretty_session<'d>(
-    st: &mut SystemTable<Boot>,
-    device: &'d mut SecureDevice,
-    challenge: &[u8],
-    sed_locked_msg: Option<&str>,
-) -> Result<Option<OpalSession<'d>>> {
-    match OpalSession::start(
-        device,
-        uid::OPAL_LOCKINGSP,
-        uid::OPAL_ADMIN1,
-        Some(challenge),
-    ) {
-        Ok(session) => Ok(Some(session)),
-        Err(Error::Opal(OpalError::Status(StatusCode::NOT_AUTHORIZED))) => Ok(None),
-        Err(Error::Opal(OpalError::Status(StatusCode::AUTHORITY_LOCKED_OUT))) => {
-            st.stdout()
-                .write_str(
-                    sed_locked_msg
-                        .unwrap_or("Too many bad tries, SED locked out, resetting in 10s.."),
-                )
-                .unwrap();
-            sleep(Duration::from_secs(10));
-            st.runtime_services()
-                .reset(ResetType::Cold, Status::WARN_RESET_REQUIRED, None);
-        }
-        e => e.map(Some),
-    }
-}
-
-fn find_secure_devices(st: &mut SystemTable<Boot>) -> uefi::Result<Vec<SecureDevice>> {
-    let mut result = Vec::new();
-
-    for handle in st.boot_services().find_handles::<BlockIO>()? {
-        let blockio = st.boot_services().handle_protocol::<BlockIO>(handle)?;
-
-        if unsafe { &mut *blockio.get() }
-            .media()
-            .is_logical_partition()
-        {
-            continue;
-        }
-
-        let device_path = st
-            .boot_services()
-            .handle_protocol::<DevicePath>(handle)?;
-        let device_path = unsafe { &mut &*device_path.get() };
-
-        if let Ok(nvme) = st
-            .boot_services()
-            .locate_device_path::<NvmExpressPassthru>(device_path)
-        {
-            let nvme = st
-                .boot_services()
-                .handle_protocol::<NvmExpressPassthru>(nvme)?;
-
-            result.push(SecureDevice::new(handle, NvmeDevice::new(nvme.get())?)?)
-        }
-
-        // todo something like that:
-        //
-        // if let Ok(ata) = st
-        //     .boot_services()
-        //     .locate_device_path::<AtaExpressPassthru>(device_path)
-        //     .log_warning()
-        // {
-        //     let ata = st
-        //         .boot_services()
-        //         .handle_protocol::<AtaExpressPassthru>(ata)?
-        //         .log();
-        //
-        //     result.push(SecureDevice::new(handle, AtaDevice::new(ata.get())?.log())?.log())
-        // }
-        //
-        // ..etc
-    }
-    Ok(result.into())
-}
 
 fn find_boot_partition(st: &mut SystemTable<Boot>) -> Result<Handle> {
     let mut res = None;

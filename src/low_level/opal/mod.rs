@@ -105,7 +105,7 @@ impl core::fmt::Debug for BS8 {
 macro_rules! simple_tokens {
     ($($name:ident = $value:literal;)*) => {
         $(
-            pub const $name: crate::opal::SimpleToken = crate::opal::SimpleToken {
+            pub const $name: crate::low_level::opal::SimpleToken = crate::low_level::opal::SimpleToken {
                 token: $value,
                 #[cfg(debug_assertions)]
                 name: stringify!($name),
@@ -117,7 +117,7 @@ macro_rules! simple_tokens {
 macro_rules! bytestrings {
     ($($name:ident = $value:literal;)*) => {
         $(
-            pub const $name: crate::opal::BS8 = crate::opal::BS8 {
+            pub const $name: crate::low_level::opal::BS8 = crate::low_level::opal::BS8 {
                 bytes: {
                     let u: u64 = $value;
                     u.to_be_bytes()
@@ -471,8 +471,8 @@ impl<N: Token, T: Token, R> TokensPush<N> for TokensCons<T, R> {
 macro_rules! token_list {
     ($($t:expr),* $(,)?) => {{
         #[allow(unused_imports)]
-        use crate::opal::{Token, TokensPush};
-        crate::opal::TokensNil $(.push($t))* .to_token_stream()
+        use crate::low_level::opal::{Token, TokensPush};
+        crate::low_level::opal::TokensNil $(.push($t))* .to_token_stream()
     }};
 }
 
@@ -480,19 +480,19 @@ macro_rules! token_list {
 macro_rules! token_name {
     ($k:expr, $v:expr $(,)?) => {{
         #[allow(unused_imports)]
-        use crate::opal::Token;
-        crate::opal::TokenName($k, $v).to_token_stream()
+        use crate::low_level::opal::Token;
+        crate::low_level::opal::TokenName($k, $v).to_token_stream()
     }};
 }
 
 #[macro_export]
 macro_rules! tokens {
-    () => { crate::opal::TokenStream::empty() };
-    ($t:expr $(,)?) => { crate::opal::Token::to_token_stream(&$t) };
+    () => { crate::low_level::opal::TokenStream::empty() };
+    ($t:expr $(,)?) => { crate::low_level::opal::Token::to_token_stream(&$t) };
     ($($t:expr),* $(,)?) => {{
         #[allow(unused_imports)]
-        use crate::opal::{TokenList, TokensPush};
-        crate::opal::TokensNil $(.push($t))* .to_bare_token_stream()
+        use crate::low_level::opal::{TokenList, TokensPush};
+        crate::low_level::opal::TokensNil $(.push($t))* .to_bare_token_stream()
     }};
 }
 

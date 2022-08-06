@@ -1,4 +1,4 @@
-use crate::opal::StatusCode;
+use crate::low_level::opal::StatusCode;
 use alloc::string::String;
 use uefi::Status;
 
@@ -14,7 +14,7 @@ const UNKNOWN: &str = "";
 
 #[derive(Debug, Clone)]
 pub enum Error {
-    Uefi(uefi::Status, &'static str),
+    Uefi(Status, &'static str),
     Opal(OpalError),
     ConfigMissing,
     ConfigNonUtf8,

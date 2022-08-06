@@ -3,10 +3,8 @@ use core::mem::MaybeUninit;
 
 use uefi::Status;
 
-use crate::{
-    nvme_passthru::{self, Command, CommandPacket, NvmExpressPassthru, QueueType, SendTarget},
-    secure_device::SecureProtocol,
-};
+use crate::low_level::nvme_passthru::{self, Command, CommandPacket, NvmExpressPassthru, QueueType, SendTarget};
+use crate::low_level::secure_device::SecureProtocol;
 
 pub struct NvmeDevice {
     passthru: *mut NvmExpressPassthru,
