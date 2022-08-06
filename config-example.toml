@@ -1,0 +1,33 @@
+# can be trace, debug, info, warn and error
+# defaults to info
+log_level = "debug"
+
+## can be 'false' to ask for password for each locked drive
+## individually, or anything else or absent to ask for password once
+## and try to unlock all drives with it
+#joined_password = true
+# ^ not implemented, always asking for passwords separately
+
+# the prompt asking for password
+prompt = "password: "
+
+# prompt for when SED rejected the password
+retry_prompt = "bad password, retry: "
+
+# * true to reset the console on incorrect password,
+#   such that `retry-prompt` replaces `prompt` inline
+# * false to print each retry on the new line
+clear_on_retry = false
+
+# message to be shown one the SED decides that you've tried an
+# incorrect password too many times - this requires a power-cycle to fix
+sed_locked_msg = "Too many bad tries, SED locked out, resetting in 10s.."
+
+# path to the UEFI image, using \ as path separator
+image = "vmlinuz-linux"
+
+# args to be passed to the kernel (joined with spaces)
+args = [
+    "initrd=/initramfs-linux.img",
+    "root=PARTUUID=cc562e1c-da71-7346-98e4-ed1b79a050b2",
+]

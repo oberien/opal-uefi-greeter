@@ -29,10 +29,10 @@ you have all the programs it uses (e.g. gdisk) and have set up Rust nightly.
 This will yield an .img file that you have to use with `--loadpbaimage` argument
 when setting up self-encrypted drive with the link above.
 
-This image also contains the `config` file copied from `config-example` file in this repo.
-You would want to edit that (by editing `config-example` before making the image or by mounting the image)
+This image also contains the `config.toml` file copied from `config-example.toml` file in this repo.
+You would want to edit that (by editing `config-example.toml` before making the image or by mounting the image)
 to specify the UEFI image that will be run - either specify the image of your bootloader (e.g. `\EFI\Microsoft\Boot\bootmgfw.efi` for Windows or `\EFI\BOOT\BOOTX64.efi` to launch the default bootloader such as grub, if present on the encrypted drive) or you can have an EFISTUB setup by specifying the `vmlinuz-linux`
-itself as the UEFI image and giving it kernel arguments in the `config` file.
+itself as the UEFI image and giving it kernel arguments in the `config.toml` file.
 
 If you have multiple SEDs - only one of them has to have the image! This is true
 even without using this project I believe. Also, a reminder that this project currently only supports

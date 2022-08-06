@@ -2,7 +2,7 @@
 
 mkdir -p target/run/mnt/EFI/BOOT
 cp "$1" target/run/mnt/EFI/BOOT/BOOTX64.efi
-cp config-example target/run/mnt/config
+cp config-example.toml target/run/mnt/config.toml
 
 cp /usr/share/edk2-ovmf/x64/OVMF_CODE.fd target/run || exit 1
 

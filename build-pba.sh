@@ -50,7 +50,7 @@ echo
 sudo mount -o loop,offset="$OFFSET" "$IMG" mnt || error
 sudo mkdir -p mnt/"${EFI_FILE%/*}"
 sudo cp -r target/x86_64-unknown-uefi/release/opal-uefi-greeter.efi mnt/"$EFI_FILE" || error
-sudo cp -r config-example mnt/config || error
+sudo cp -r config-example.toml mnt/config.toml || error
 sudo umount mnt || error
 
 rmdir mnt

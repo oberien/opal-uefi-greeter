@@ -17,9 +17,8 @@ pub enum Error {
     Uefi(Status, &'static str),
     Opal(OpalError),
     ConfigMissing,
-    ConfigNonUtf8,
+    InvalidConfig(toml::de::Error),
     ConfigArgsBadUtf16,
-    ConfigVerbMissing(&'static str),
     NoBootPartitions,
     MultipleBootPartitions,
     ImageNotFound(String),
@@ -35,6 +34,12 @@ impl From<Status> for Error {
 impl From<OpalError> for Error {
     fn from(error: OpalError) -> Self {
         Self::Opal(error)
+    }
+}
+
+impl From<toml::de::Error> for Error {
+    fn from(e: toml::de::Error) -> Self {
+        Error::InvalidConfig(e)
     }
 }
 

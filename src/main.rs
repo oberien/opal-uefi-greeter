@@ -5,29 +5,24 @@
 #![feature(new_uninit)]
 #![feature(maybe_uninit_slice)]
 #![allow(clippy::missing_safety_doc)]
+#![allow(deprecated)]
 
 #[macro_use]
 extern crate alloc;
 // make sure to link this
 extern crate rlibc;
 
-use alloc::vec::Vec;
 use uefi::table::boot::LoadImageSource;
 use core::{convert::TryFrom, fmt::Write};
 
 use uefi::{
-    CStr16,
     CString16,
     prelude::*,
     proto::{
         device_path::DevicePath,
         loaded_image::LoadedImage,
-        media::{
-            file::{File, FileAttribute, FileInfo, FileMode, FileType},
-            fs::SimpleFileSystem,
-            partition::{GptPartitionType, PartitionInfo},
-        },
-    }, table::{boot::MemoryType, runtime::ResetType},
+        media::partition::{GptPartitionType, PartitionInfo},
+    }, table::runtime::ResetType,
 };
 use low_level::nvme_device::NvmeDevice;
 use low_level::nvme_passthru::*;
@@ -68,7 +63,7 @@ fn run(image_handle: Handle, st: &mut SystemTable<Boot>) -> Result {
     // disable watchdog
     st.boot_services().set_watchdog_timer(0, 0x31337, None).fix(info!())?;
 
-    let config = load_config(image_handle, st)?;
+    let config = config::load(image_handle, st)?;
 
     let devices = unlock_opal::find_secure_devices(st).fix(info!())?;
 
@@ -104,7 +99,7 @@ fn run(image_handle: Handle, st: &mut SystemTable<Boot>) -> Result {
 
     let image = CString16::try_from(config.image.as_str()).or(Err(Error::ConfigArgsBadUtf16))?;
 
-    let buf = read_file(st, handle, &image)
+    let buf = util::read_file(st, handle, &image)
         .fix(info!())?
         .ok_or(Error::ImageNotFound(config.image))?;
 
@@ -122,7 +117,8 @@ fn run(image_handle: Handle, st: &mut SystemTable<Boot>) -> Result {
         .fix(info!())?;
     let loaded_image = unsafe { &mut *loaded_image.get() };
 
-    let args = CString16::try_from(&*config.args).or(Err(Error::ConfigArgsBadUtf16))?;
+    let args = config.args.join(" ");
+    let args = CString16::try_from(&*args).or(Err(Error::ConfigArgsBadUtf16))?;
     unsafe { loaded_image.set_load_options(args.as_ptr() as *const u8, args.num_bytes() as _) };
 
     st.boot_services()
@@ -144,29 +140,6 @@ fn config_stdout(st: &mut SystemTable<Boot>) -> uefi::Result {
 
     Ok(().into())
 }
-
-fn load_config(image_handle: Handle, st: &mut SystemTable<Boot>) -> Result<Config> {
-    let loaded_image = st
-        .boot_services()
-        .handle_protocol::<LoadedImage>(image_handle)
-        .fix(info!())?;
-    let device_path = st
-        .boot_services()
-        .handle_protocol::<DevicePath>(unsafe { &*loaded_image.get() }.device())
-        .fix(info!())?;
-    let device_handle = st
-        .boot_services()
-        .locate_device_path::<SimpleFileSystem>(unsafe { &mut &*device_path.get() })
-        .fix(info!())?;
-    let buf = read_file(st, device_handle, cstr16!("config"))
-        .fix(info!())?
-        .ok_or(Error::ConfigMissing)?;
-    let config = Config::parse(&buf)?;
-    log::set_max_level(config.log_level);
-    log::debug!("loaded config = {:#?}", config);
-    Ok(config)
-}
-
 
 fn find_boot_partition(st: &mut SystemTable<Boot>) -> Result<Handle> {
     let mut res = None;
@@ -193,34 +166,3 @@ fn find_boot_partition(st: &mut SystemTable<Boot>) -> Result<Handle> {
     res.ok_or(Error::NoBootPartitions)
 }
 
-fn read_file(
-    st: &mut SystemTable<Boot>,
-    device: Handle,
-    file: &CStr16,
-) -> uefi::Result<Option<Vec<u8>>> {
-    let sfs = st
-        .boot_services()
-        .handle_protocol::<SimpleFileSystem>(device)?;
-    let sfs = unsafe { &mut *sfs.get() };
-
-    let file_handle = sfs
-        .open_volume()?
-        .open(&file, FileMode::Read, FileAttribute::empty())?;
-
-    if let FileType::Regular(mut f) = file_handle.into_type()? {
-        let info = f.get_boxed_info::<FileInfo>()?;
-        let size = info.file_size() as usize;
-        let ptr = st
-            .boot_services()
-            .allocate_pool(MemoryType::LOADER_DATA, size)?;
-        let mut buf = unsafe { Vec::from_raw_parts(ptr, size, size) };
-
-        let read = f
-            .read(&mut buf)
-            .map_err(|_| uefi::Status::BUFFER_TOO_SMALL)?;
-        buf.truncate(read);
-        Ok(Some(buf).into())
-    } else {
-        Ok(None.into())
-    }
-}
