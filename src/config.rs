@@ -8,7 +8,7 @@ use uefi::proto::loaded_image::LoadedImage;
 use uefi::proto::media::fs::SimpleFileSystem;
 use uefi::table::{Boot, SystemTable};
 
-use crate::error::{Error, Result};
+use crate::error::Result;
 use crate::{info, ResultFixupExt};
 
 pub fn load(image_handle: Handle, st: &mut SystemTable<Boot>) -> Result<Config> {
@@ -24,9 +24,7 @@ pub fn load(image_handle: Handle, st: &mut SystemTable<Boot>) -> Result<Config> 
         .boot_services()
         .locate_device_path::<SimpleFileSystem>(unsafe { &mut &*device_path.get() })
         .fix(info!())?;
-    let buf = crate::util::read_file(st, device_handle, cstr16!("config.toml"))
-        .fix(info!())?
-        .ok_or(Error::ConfigMissing)?;
+    let buf = crate::util::read_full_file(st, device_handle, cstr16!("config.toml"))?;
     let config: Config = toml::from_slice(&buf)?;
     log::set_max_level(config.log_level);
     log::debug!("loaded config = {:#?}", config);

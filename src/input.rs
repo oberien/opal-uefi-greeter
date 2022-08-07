@@ -11,36 +11,42 @@ pub fn password(st: &mut SystemTable<Boot>) -> Result<String> {
 pub fn line(st: &mut SystemTable<Boot>) -> Result<String> {
     read(st, None)
 }
-fn read(st: &mut SystemTable<Boot>, replacement_char: Option<char>) -> Result<String> {
+pub fn key(st: &mut SystemTable<Boot>) -> Result<Key> {
     let mut wait_for_key = [unsafe { st.stdin().wait_for_key_event().unsafe_clone() }];
 
-    let mut data = String::with_capacity(32);
     loop {
         st.boot_services()
             .wait_for_event(&mut wait_for_key)
             .fix(info!())?;
-
-        match st.stdin().read_key().fix(info!())? {
+        if let Some(key) = st.stdin().read_key().fix(info!())? {
+            return Ok(key)
+        }
+    }
+}
+fn read(st: &mut SystemTable<Boot>, replacement_char: Option<char>) -> Result<String> {
+    let mut data = String::with_capacity(32);
+    loop {
+        match key(st)? {
             // cr / lf
-            Some(Key::Printable(k)) if [0xD, 0xA].contains(&u16::from(k)) => {
+            Key::Printable(k) if [0xD, 0xA].contains(&u16::from(k)) => {
                 write_char(st, 0x0D)?;
                 write_char(st, 0x0A)?;
                 break Ok(data);
             }
             // backspace
-            Some(Key::Printable(k)) if u16::from(k) == 0x8 => {
+            Key::Printable(k) if u16::from(k) == 0x8 => {
                 if data.pop().is_some() {
                     write_char(st, 0x08)?;
                 }
             }
-            Some(Key::Printable(k)) => {
+            Key::Printable(k) => {
                 match replacement_char {
                     Some(c) => write_char(st, c as u16)?,
                     None => write_char(st, u16::from(k))?,
                 }
                 data.push(k.into());
             }
-            Some(Key::Special(ScanCode::ESCAPE)) => {
+            Key::Special(ScanCode::ESCAPE) => {
                 st.runtime_services()
                     .reset(ResetType::Shutdown, Status::SUCCESS, None)
             }

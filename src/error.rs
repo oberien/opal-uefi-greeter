@@ -18,9 +18,9 @@ pub enum Error {
     Opal(OpalError),
     ConfigMissing,
     InvalidConfig(toml::de::Error),
-    ConfigArgsBadUtf16,
-    NoBootPartitions,
-    MultipleBootPartitions,
+    EfiImageNameNonUtf16,
+    FileNameNonUtf16,
+    FileNotFound,
     ImageNotFound(String),
     ImageNotPeCoff,
 }

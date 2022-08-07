@@ -12,18 +12,20 @@ extern crate alloc;
 // make sure to link this
 extern crate rlibc;
 
+use alloc::string::{String, ToString};
+use alloc::vec::Vec;
 use uefi::table::boot::LoadImageSource;
 use core::{convert::TryFrom, fmt::Write};
 
-use uefi::{
-    CString16,
-    prelude::*,
-    proto::{
-        device_path::DevicePath,
-        loaded_image::LoadedImage,
-        media::partition::{GptPartitionType, PartitionInfo},
-    }, table::runtime::ResetType,
-};
+use uefi::{CStr16, CString16, prelude::*, proto::{
+    device_path::DevicePath,
+    loaded_image::LoadedImage,
+    media::partition::{GptPartitionType, PartitionInfo},
+}, table::runtime::ResetType};
+use uefi::data_types::Align;
+use uefi::proto::media::file::{Directory, File, FileAttribute, FileInfo, FileMode, FileType};
+use uefi::proto::media::fs::SimpleFileSystem;
+use uefi::proto::media::partition::GptPartitionEntry;
 use low_level::nvme_device::NvmeDevice;
 use low_level::nvme_passthru::*;
 use low_level::secure_device::SecureDevice;
@@ -42,6 +44,7 @@ pub mod util;
 pub mod input;
 pub mod low_level;
 pub mod unlock_opal;
+mod ui;
 
 #[entry]
 fn main(image_handle: Handle, mut st: SystemTable<Boot>) -> Status {
@@ -89,24 +92,46 @@ fn run(image_handle: Handle, st: &mut SystemTable<Boot>) -> Result {
         };
     }
 
-    let handle = find_boot_partition(st)?;
+    let boot_partitions = find_boot_partitions(st)?;
 
-    let dp = st
-        .boot_services()
-        .handle_protocol::<DevicePath>(handle)
-        .fix(info!())?;
-    let dp = unsafe { &mut *dp.get() };
+    let mut boot_options = Vec::new();
+    let mut bootable_things = Vec::new();
+    for (gpt, partition) in boot_partitions {
+        let name = gpt.partition_name;
+        let name = unsafe { CStr16::from_ptr(&name[0]) };
+        let partuuid = gpt.unique_partition_guid;
+        let lbas = gpt.ending_lba - gpt.starting_lba;
+        let description = format!("\"{name}\": {partuuid} ({lbas} LBAs)");
+        boot_options.push((false, description));
 
-    let image = CString16::try_from(config.image.as_str()).or(Err(Error::ConfigArgsBadUtf16))?;
+        for efi_file in find_efi_files(st, partition)? {
+            boot_options.push((true, format!("    {efi_file}")));
+            bootable_things.push((partuuid, partition.clone(), efi_file));
+        }
+    }
 
-    let buf = util::read_file(st, handle, &image)
-        .fix(info!())?
-        .ok_or(Error::ImageNotFound(config.image))?;
+    let index = ui::choose(st, &boot_options)?;
+    log::info!("chose index {index}");
+    // remove unselectable things
+    let index: usize = boot_options.iter().take(index + 1).map(|(selectable, _)| *selectable as usize).sum();
+    let index = index - 1;
+    log::info!("cleaned index {index}");
+    let (partuuid, partition, filename) = bootable_things[index].clone();
+    log::info!("loading image {partuuid}:{filename}");
+    let _ = input::line(st);
 
+    let filename = CString16::try_from(&*filename).or(Err(Error::EfiImageNameNonUtf16))?;
+
+    let buf = util::read_full_file(st, partition, &filename)?;
     if buf.get(0..2) != Some(&[0x4d, 0x5a]) {
         return Err(Error::ImageNotPeCoff);
     }
 
+    let dp = st
+        .boot_services()
+        .handle_protocol::<DevicePath>(partition)
+        .fix(info!())?;
+    let dp = unsafe { &mut *dp.get() };
     let loaded_image_handle = st
         .boot_services()
         .load_image(image_handle, LoadImageSource::FromBuffer { file_path: Some(dp), buffer: &buf })
@@ -118,7 +143,7 @@ fn run(image_handle: Handle, st: &mut SystemTable<Boot>) -> Result {
     let loaded_image = unsafe { &mut *loaded_image.get() };
 
     let args = config.args.join(" ");
-    let args = CString16::try_from(&*args).or(Err(Error::ConfigArgsBadUtf16))?;
+    let args = CString16::try_from(&*args).or(Err(Error::EfiImageNameNonUtf16))?;
     unsafe { loaded_image.set_load_options(args.as_ptr() as *const u8, args.num_bytes() as _) };
 
     st.boot_services()
@@ -141,13 +166,10 @@ fn config_stdout(st: &mut SystemTable<Boot>) -> uefi::Result {
     Ok(().into())
 }
 
-fn find_boot_partition(st: &mut SystemTable<Boot>) -> Result<Handle> {
-    let mut res = None;
-    for handle in st
-        .boot_services()
-        .find_handles::<PartitionInfo>()
-        .fix(info!())?
-    {
+fn find_boot_partitions(st: &mut SystemTable<Boot>) -> Result<Vec<(GptPartitionEntry, Handle)>> {
+    let mut res = Vec::new();
+    let handles = st.boot_services().find_handles::<PartitionInfo>().fix(info!())?;
+    for handle in handles {
         let pi = st
             .boot_services()
             .handle_protocol::<PartitionInfo>(handle)
@@ -156,13 +178,69 @@ fn find_boot_partition(st: &mut SystemTable<Boot>) -> Result<Handle> {
 
         match pi.gpt_partition_entry() {
             Some(gpt) if { gpt.partition_type_guid } == GptPartitionType::EFI_SYSTEM_PARTITION => {
-                if res.replace(handle).is_some() {
-                    return Err(Error::MultipleBootPartitions);
-                }
+                res.push((gpt.clone(), handle));
             }
             _ => {}
         }
     }
-    res.ok_or(Error::NoBootPartitions)
+    Ok(res)
 }
 
+fn find_efi_files(st: &mut SystemTable<Boot>, partition: Handle) -> Result<Vec<String>> {
+    let sfs = st
+        .boot_services()
+        .handle_protocol::<SimpleFileSystem>(partition)
+        .fix(info!())?;
+    let sfs = unsafe { &mut *sfs.get() };
+
+    let dir = sfs.open_volume().fix(info!())?;
+    let mut files = Vec::new();
+    find_efi_files_rec(st, &mut files, String::from(""), partition, dir)?;
+    Ok(files)
+}
+
+fn find_efi_files_rec(st: &mut SystemTable<Boot>, files: &mut Vec<String>, prefix: String, partition: Handle, mut directory: Directory) -> Result<()> {
+    let mut buf = vec![0; 1024];
+    let buf = FileInfo::align_buf(&mut buf).unwrap();
+    let dir_info: &FileInfo = directory.get_info(buf).fix(info!())?;
+    let name = dir_info.file_name().to_string();
+    let prefix = format!("{prefix}{name}\\");
+    log::info!("visiting directory {prefix}");
+
+    loop {
+        let mut buf = vec![0; 1024];
+        let buf = FileInfo::align_buf(&mut buf).unwrap();
+        let entry = match directory.read_entry(buf).fix(info!())? {
+            Some(entry) => entry,
+            None => break,
+        };
+        let name = entry.file_name().to_string();
+        if name == "." || name == ".." {
+            continue;
+        }
+        let file_handle = directory.open(entry.file_name(), FileMode::Read, FileAttribute::empty())
+            .fix(info!())?;
+        match file_handle.into_type().fix(info!())? {
+            FileType::Regular(_) => {
+                let filename = format!("{prefix}{name}");
+                log::info!("found file {filename}");
+                let filename_cstr16 = CString16::try_from(&*filename).or(Err(Error::FileNameNonUtf16))?;
+                let mut header = vec![0; 2];
+                let read = util::read_partial_file_to_vec(st, partition, &filename_cstr16, &mut header)?;
+                if read != 2 {
+                    log::info!("    smaller than 2 bytes (read {read} bytes)");
+                    continue;
+                }
+                if header != [0x4d, 0x5a] {
+                    log::info!("    not PE/COFF (header {header:x?})");
+                    continue;
+                }
+                log::info!("    PE/COFF");
+                files.push(filename);
+            },
+            FileType::Dir(dir) => find_efi_files_rec(st, files, prefix.clone(), partition, dir)?,
+        }
+    }
+
+    Ok(())
+}
