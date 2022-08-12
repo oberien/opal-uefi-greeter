@@ -28,6 +28,6 @@ image = "vmlinuz-linux"
 
 # args to be passed to the kernel (joined with spaces)
 args = [
-    "initrd=/initramfs-linux.img",
+#    "initrd=/initramfs-linux.img",
     "root=PARTUUID=cc562e1c-da71-7346-98e4-ed1b79a050b2",
 ]

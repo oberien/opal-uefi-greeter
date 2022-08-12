@@ -23,3 +23,4 @@ log = { version = '0.4', default-features = false, features = ["serde"] }
 serde = { version = "1.0.140", default-features = false, features = ["derive", "alloc"] }
 # fork with no-std support
 toml = { git = "https://github.com/diondokter/toml-rs", default-features = false }
+initramfs = { version = "0.2.0", default-features = false }

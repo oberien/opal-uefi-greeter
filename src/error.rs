@@ -19,6 +19,7 @@ pub enum Error {
     ConfigMissing,
     InvalidConfig(toml::de::Error),
     EfiImageNameNonUtf16,
+    InitrdNameNonUtf16,
     FileNameNonUtf16,
     FileNotFound,
     ImageNotFound(String),

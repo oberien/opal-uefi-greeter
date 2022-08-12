@@ -90,6 +90,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "hex"
+version = "0.4.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7f24254aa9a54b5c858eaee2f5bccdb46aaf0e486a595ed5fd8f86ba55232a70"
+
+[[package]]
 name = "hmac"
 version = "0.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -97,6 +103,16 @@ checksum = "2a2a2320eb7ec0ebe8da8f744d7812d9fc4cb4d09344ac01898dbcb6a20ae69b"
 dependencies = [
  "crypto-mac",
  "digest",
+]
+
+[[package]]
+name = "initramfs"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ca8ad6935d97646572dde95b064b4a438b932a3aee8dfc296ec3b54e8339db65"
+dependencies = [
+ "hex",
+ "log",
 ]
 
 [[package]]
@@ -121,6 +137,7 @@ version = "0.1.0"
 dependencies = [
  "bitflags",
  "hmac",
+ "initramfs",
  "log",
  "pbkdf2",
  "rlibc",
