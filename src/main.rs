@@ -15,9 +15,13 @@ extern crate rlibc;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 use uefi::table::boot::{AllocateType, LoadImageSource, MemoryType};
-use core::{convert::TryFrom, fmt::Write, iter, slice};
+use core::{convert::TryFrom, fmt::Write, slice};
 use initramfs::{Archive, File, Initramfs};
-
+use core::str;
+use log::LevelFilter;
+use uefi::Handle;
+use uefi::prelude::cstr16;
+use uefi::table::{Boot, SystemTable};
 use uefi::{CStr16, CString16, prelude::*, proto::{
     device_path::DevicePath,
     loaded_image::LoadedImage,
@@ -30,7 +34,6 @@ use uefi::proto::media::partition::GptPartitionEntry;
 use low_level::nvme_device::NvmeDevice;
 use low_level::nvme_passthru::*;
 use low_level::secure_device::SecureDevice;
-
 use crate::{
     config::Config,
     error::{Error, OpalError, Result, ResultFixupExt},
@@ -160,8 +163,11 @@ fn run(image_handle: Handle, st: &mut SystemTable<Boot>) -> Result {
     initramfs.write(&mut serialized);
 
     let num_pages = (serialized.len() + 4095) / 4096;
-    // we leak this memory as it must be available after exit_boot_services
-    let initramfs_addr = st.boot_services().allocate_pages(AllocateType::AnyPages, MemoryType::RUNTIME_SERVICES_DATA, num_pages).fix(info!())?;
+    // Allocate initramfs in RUNTIME_SERVICES_DATA such that it is available after the EFISTUB calls exit_boot_services.
+    // After reallocating the RAMDISK, the kernel frees our memory in `reserve_initrd` via `memblock_phys_free`.
+    let initramfs_addr = st.boot_services()
+        .allocate_pages(AllocateType::AnyPages, MemoryType::RUNTIME_SERVICES_DATA, num_pages)
+        .fix(info!())?;
     let buffer = unsafe { slice::from_raw_parts_mut(initramfs_addr as *mut u8, num_pages * 4096) };
     (&mut buffer[..serialized.len()]).copy_from_slice(&serialized);
     log::debug!("initramfs loaded");
@@ -186,7 +192,7 @@ fn run(image_handle: Handle, st: &mut SystemTable<Boot>) -> Result {
     // chain-load efistub
 
     let initrdmem = format!("initrdmem={initramfs_addr},{}", serialized.len());
-    let args: Vec<_> = config.args.iter().map(|a| a.as_str()).chain(iter::once(&*initrdmem)).collect();
+    let args: Vec<_> = config.args.iter().map(|a| a.as_str()).chain([&*initrdmem, "loglevel=8"]).collect();
     let args = args.join(" ");
     log::debug!("passing args: `{args}`");
     let args = CString16::try_from(&*args).or(Err(Error::EfiImageNameNonUtf16))?;
@@ -213,6 +219,26 @@ fn config_stdout(st: &mut SystemTable<Boot>) -> uefi::Result {
     };
 
     Ok(().into())
+}
+
+pub fn load(image_handle: Handle, st: &mut SystemTable<Boot>) -> Result<Config> {
+    let loaded_image = st
+        .boot_services()
+        .handle_protocol::<LoadedImage>(image_handle)
+        .fix(info!())?;
+    let device_path = st
+        .boot_services()
+        .handle_protocol::<DevicePath>(unsafe { &*loaded_image.get() }.device())
+        .fix(info!())?;
+    let device_handle = st
+        .boot_services()
+        .locate_device_path::<SimpleFileSystem>(unsafe { &mut &*device_path.get() })
+        .fix(info!())?;
+    let buf = crate::util::read_full_file(st, device_handle, cstr16!("config.toml"))?;
+    let config: Config = toml::from_slice(&buf)?;
+    log::set_max_level(config.log_level);
+    log::debug!("loaded config = {:#?}", config);
+    Ok(config)
 }
 
 fn find_boot_partitions(st: &mut SystemTable<Boot>) -> Result<Vec<(GptPartitionEntry, Handle)>> {
