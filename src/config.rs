@@ -1,31 +1,76 @@
 use alloc::{string::String, vec::Vec};
+use alloc::collections::BTreeMap;
+use core::cell::RefCell;
 use log::LevelFilter;
 use serde::{Deserialize, Deserializer};
+use either::Either;
+#[cfg(target_os = "uefi")] use uefi::prelude::cstr16;
+#[cfg(target_os = "uefi")] use crate::info;
+#[cfg(target_os = "uefi")] use uefi::{Handle, table::SystemTable, table::Boot};
+#[cfg(target_os = "uefi")] use uefi::proto::loaded_image::LoadedImage;
+#[cfg(target_os = "uefi")] use uefi::proto::device_path::DevicePath;
+#[cfg(target_os = "uefi")] use uefi::proto::media::fs::SimpleFileSystem;
+#[cfg(target_os = "uefi")] use crate::ResultFixupExt;
+
+#[cfg(target_os = "uefi")]
+pub fn load(image_handle: Handle, st: &mut SystemTable<Boot>) -> crate::Result<Config> {
+    let loaded_image = st
+        .boot_services()
+        .handle_protocol::<LoadedImage>(image_handle)
+        .fix(info!())?;
+    let device_path = st
+        .boot_services()
+        .handle_protocol::<DevicePath>(unsafe { &*loaded_image.get() }.device())
+        .fix(info!())?;
+    let device_handle = st
+        .boot_services()
+        .locate_device_path::<SimpleFileSystem>(unsafe { &mut &*device_path.get() })
+        .fix(info!())?;
+    let buf = crate::util::read_full_file(st, device_handle, cstr16!("config.toml"))?;
+    let config: Config = toml::from_slice(&buf)?;
+    log::set_max_level(config.log_level);
+    // log::debug!("loaded config = {:#?}", config);
+    Ok(config)
+}
+
 
 #[derive(Debug, serde::Deserialize)]
 pub struct Config {
-    pub keyslots: Vec<KeySlot>,
-    pub partitions: Vec<Partition>,
+    #[serde(deserialize_with = "deserialize_keyslots")]
+    pub keyslots: BTreeMap<String, Keyslot>,
+    #[serde(skip)]
+    pub keyslot_buffer: RefCell<BTreeMap<String, Vec<u8>>>,
+    #[serde(skip)]
+    pub luks_masterkey_buffer: RefCell<BTreeMap<String, luks2::SecretMasterKey>>,
+    #[serde(deserialize_with = "deserialize_partitions")]
+    pub partitions: BTreeMap<String, Partition>,
     pub boot_entries: Vec<BootEntry>,
     pub log_level: LevelFilter,
 }
 
+fn deserialize_keyslots<'de, D: Deserializer<'de>>(deserializer: D) -> Result<BTreeMap<String, Keyslot>, D::Error> {
+    let keyslots = Vec::<Keyslot>::deserialize(deserializer)?;
+    Ok(keyslots.into_iter().map(|ks| (ks.name.clone(), ks)).collect())
+}
+fn deserialize_partitions<'de, D: Deserializer<'de>>(deserializer: D) -> Result<BTreeMap<String, Partition>, D::Error> {
+    let partitions = Vec::<Partition>::deserialize(deserializer)?;
+    Ok(partitions.into_iter().map(|p| (p.name.clone(), p)).collect())
+}
+
 #[derive(Debug, serde::Deserialize)]
-pub struct KeySlot {
+pub struct Keyslot {
     pub name: String,
-    pub source: KeySlotSource,
+    pub source: KeyslotSource,
 }
 
 #[derive(Debug, serde::Deserialize)]
 #[serde(untagged)]
-pub enum KeySlotSource {
+pub enum KeyslotSource {
     #[serde(deserialize_with = "deserialize_stdin")]
     Stdin,
     File(File),
 }
-fn deserialize_stdin<'de, D>(deserializer: D) -> Result<(), D::Error>
-    where D: Deserializer<'de>
-{
+fn deserialize_stdin<'de, D: Deserializer<'de>>(deserializer: D) -> Result<(), D::Error> {
     #[derive(Deserialize)]
     enum Helper { #[serde(rename = "stdin")] Stdin }
     Helper::deserialize(deserializer)?;
@@ -65,9 +110,18 @@ pub enum Initrd {
     Multiple(Vec<File>),
 }
 
+impl Initrd {
+    pub fn iter(&self) -> impl Iterator<Item = &File> {
+        match self {
+            Initrd::Single(file) => Either::Left(core::iter::once(file)),
+            Initrd::Multiple(files) => Either::Right(files.iter()),
+        }
+    }
+}
+
 #[derive(Debug, serde::Deserialize)]
 pub struct AdditionalInitrdFile {
     #[serde(flatten)]
-    source: File,
-    target_file: String,
+    pub source: File,
+    pub target_file: String,
 }

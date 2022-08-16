@@ -7,10 +7,10 @@ use uefi::proto::media::block::BlockIO;
 use uefi::Status;
 use uefi::table::{Boot, SystemTable};
 use uefi::table::runtime::ResetType;
-use crate::{Error, info, NvmeDevice, NvmExpressPassthru, OpalError, OpalSession, SecureDevice, sleep, StatusCode, uid, Result, LockingState, Config, ResultFixupExt};
+use crate::{Error, info, NvmeDevice, NvmExpressPassthru, OpalError, OpalSession, SecureDevice, sleep, StatusCode, uid, Result, LockingState, ResultFixupExt};
 
 /// Returns Ok(Ok((())) if unlocking was successful, Ok(Err(())) if the password was wrong
-pub fn try_unlock_device(st: &mut SystemTable<Boot>, config: &Config, device: &mut SecureDevice, password: String) -> Result<core::result::Result<(), ()>> {
+pub fn try_unlock_device(st: &mut SystemTable<Boot>, device: &mut SecureDevice, password: String) -> Result<core::result::Result<(), ()>> {
     let mut hash = vec![0; 32];
 
     // as in sedutil-cli, maybe will change
@@ -22,7 +22,7 @@ pub fn try_unlock_device(st: &mut SystemTable<Boot>, config: &Config, device: &m
     );
 
     {
-        let session = pretty_session(st, device, &*hash, config.sed_locked_msg.as_deref())?;
+        let session = pretty_session(st, device, &*hash)?;
         if let Some(mut s) = session {
             s.set_mbr_done(true)?;
             s.set_locking_range(0, LockingState::ReadWrite)?;
@@ -41,7 +41,6 @@ fn pretty_session<'d>(
     st: &mut SystemTable<Boot>,
     device: &'d mut SecureDevice,
     challenge: &[u8],
-    sed_locked_msg: Option<&str>,
 ) -> Result<Option<OpalSession<'d>>> {
     match OpalSession::start(
         device,
@@ -53,10 +52,7 @@ fn pretty_session<'d>(
         Err(Error::Opal(OpalError::Status(StatusCode::NOT_AUTHORIZED))) => Ok(None),
         Err(Error::Opal(OpalError::Status(StatusCode::AUTHORITY_LOCKED_OUT))) => {
             st.stdout()
-                .write_str(
-                    sed_locked_msg
-                        .unwrap_or("Too many bad tries, SED locked out, resetting in 10s.."),
-                )
+                .write_str("Too many bad tries, SED locked out, resetting in 10s..")
                 .unwrap();
             sleep(Duration::from_secs(10));
             st.runtime_services()

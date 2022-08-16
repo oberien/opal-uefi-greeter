@@ -1,23 +1,23 @@
-log_level = "debug"
+log_level = "trace"
 
 keyslots = [
     { name = "logos2-opal", source = "stdin" },
     { name = "keypartition", source = "stdin" },
-    { name = "keyfile_system", source = { partition = "keys", file = "/keyfile_system" } },
+    { name = "keyfile_lvm", source = { partition = "keys", file = "/keyfile_lvm" } },
 ]
 
 [[partitions]]
     name = "keys-encrypted"
-    uuid = "30a65847-0e31-4c1c-85b1-3f6c9f9ff4e1"
+    uuid = "49db1904-50bf-4b8e-922d-1030de11cac2"
     keyslot = "keypartition"
 [[partitions]]
     name = "keys"
     parent = "keys-encrypted"
-    uuid = "8a808821-3f29-402d-bdb8-a44dbd067b95"
+    uuid = "711148c9-e4cb-4fcf-b87a-02aaeca2267b"
 [[partitions]]
     name = "samsung-1TB"
     uuid = "fa630800-b26d-43b9-a1ef-6c15d60abaa4"
-    keyslot = "kefile_system"
+    keyslot = "keyfile_lvm"
 [[partitions]]
     name = "lvm"
     parent = "samsung-1TB"
@@ -34,14 +34,14 @@ keyslots = [
 [[boot_entries]]
     name = "Linux"
     partition = "system"
-    file = "/vmlinuz-linux"
+    file = "/boot2/vmlinuz-linux-zen"
     initrd = [
-        { partition = "system", file = "/initramfs-linux.img" },
-        { partition = "system", file = "/amd-ucode.img" },
+        { partition = "system", file = "/boot2/initramfs-linux-zen.img" },
+        { partition = "system", file = "/boot2/amd-ucode.img" },
     ]
     additional_initrd_files = [
         { partition = "keys", file = "/keyfile_lvm", target_file = "/keyfile_lvm" },
         { partition = "keys", file = "/keyfile_lvm2_512G", target_file = "/keyfile_lvm2_512G" },
     ]
-    options = "intel_iommu=on root=/dev/vg_lvm/system"
+    options = "intel_iommu=on root=/dev/vg_lvm/system systemd.debug-shell=1"
     default = true

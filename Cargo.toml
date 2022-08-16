@@ -24,3 +24,24 @@ serde = { version = "1.0.140", default-features = false, features = ["derive", "
 # fork with no-std support
 toml = { git = "https://github.com/diondokter/toml-rs", default-features = false }
 initramfs = { version = "0.2.0", default-features = false }
+positioned-io2 = { version = "0.3.4", default-features = false }
+acid_io = { version = "0.1.0", default-features = false, features = ["alloc"] }
+lvm2 = { version = "0.0.3", default-features = false }
+ext4 = { version = "0.10.0", default-features = false }
+luks2 = { version = "0.5.0", default-features = false }
+thiserror-no-std = { version = "2.0.2", default-features = false }
+bootsector = { version = "0.2.0", default-features = false }
+uuid = { version = "1.1.2", default-features = false }
+either = { version = "1.7.0", default-features = false }
+fatfs = { git = "https://github.com/rafalh/rust-fatfs", default-features = false }
+
+[patch.crates-io]
+acid_io = { git = "https://github.com/oberien/acid_io" }
+positioned-io2 = { git = "https://github.com/oberien/positioned-io2", branch = "no_std" }
+ext4 = { git = "https://github.com/oberien/ext4-rs", branch = "no_std" }
+#ext4 = { path = "../ext4-rs" }
+#luks2 = { git = "https://github.com/oberien/luks2" }
+luks2 = { path = "../luks2" }
+xts-mode = { git = "https://github.com/oberien/xts-mode" }
+bootsector = { git = "https://github.com/oberien/bootsector" }
+#lvm2 = { path = "../rust-lvm2" }

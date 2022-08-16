@@ -1,5 +1,7 @@
 use crate::low_level::opal::StatusCode;
 use alloc::string::String;
+use core::fmt::{Debug, Display, Formatter};
+use luks2::error::LuksError;
 use uefi::Status;
 
 pub type Result<T = ()> = core::result::Result<T, Error>;
@@ -10,38 +12,34 @@ pub enum OpalError {
     NoMethodStatus,
 }
 
-const UNKNOWN: &str = "";
+pub struct UefiAcidioWrapper(pub uefi::Error, pub &'static str);
+impl Debug for UefiAcidioWrapper {
+    fn fmt(&self, f: &mut Formatter<'_>) -> core::fmt::Result {
+        Debug::fmt(&self.0, f)
+    }
+}
+impl Display for UefiAcidioWrapper {
+    fn fmt(&self, f: &mut Formatter<'_>) -> core::fmt::Result {
+        // uefi::Error doesn't have a Display impl
+        Debug::fmt(&self.0, f)
+    }
+}
+impl acid_io::ErrorTrait for UefiAcidioWrapper {}
 
-#[derive(Debug, Clone)]
+#[derive(Debug, thiserror_no_std::Error)]
 pub enum Error {
     Uefi(Status, &'static str),
-    Opal(OpalError),
+    Opal(#[from] OpalError),
+    IoError(#[from] acid_io::Error),
     ConfigMissing,
-    InvalidConfig(toml::de::Error),
+    InvalidConfig(#[from] toml::de::Error),
     EfiImageNameNonUtf16,
     InitrdNameNonUtf16,
     FileNameNonUtf16,
     FileNotFound,
     ImageNotFound(String),
     ImageNotPeCoff,
-}
-
-impl From<Status> for Error {
-    fn from(status: Status) -> Self {
-        Self::Uefi(status, UNKNOWN)
-    }
-}
-
-impl From<OpalError> for Error {
-    fn from(error: OpalError) -> Self {
-        Self::Opal(error)
-    }
-}
-
-impl From<toml::de::Error> for Error {
-    fn from(e: toml::de::Error) -> Self {
-        Error::InvalidConfig(e)
-    }
+    Luks(#[from] LuksError),
 }
 
 impl From<StatusCode> for Error {
@@ -61,7 +59,7 @@ macro_rules! info {
     };
 }
 
-impl<T, D: core::fmt::Debug> ResultFixupExt<T> for uefi::Result<T, D> {
+impl<T, D: Debug> ResultFixupExt<T> for uefi::Result<T, D> {
     fn fix(self, info: &'static str) -> Result<T> {
         self
             .map_err(|e| Error::Uefi(e.status(), info))

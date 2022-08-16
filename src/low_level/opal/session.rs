@@ -1,15 +1,10 @@
 use alloc::string::String;
 use core::{fmt::Write, mem::size_of_val, time::Duration};
 
-use crate::{
-    error::{Error, OpalError, Result},
-    low_level::opal::{
-        BS8,
-        command::{OpalCommand, OpalCommandBuilder, OpalResponse}, LockingState, method, OpalHeader, SimpleToken, StatusCode, tiny_atom, token, uid,
-    },
-    token_list, token_name, tokens,
-    util::sleep,
-};
+use crate::{error::{Error, OpalError, Result}, info, low_level::opal::{
+    BS8,
+    command::{OpalCommand, OpalCommandBuilder, OpalResponse}, LockingState, method, OpalHeader, SimpleToken, StatusCode, tiny_atom, token, uid,
+}, ResultFixupExt, token_list, token_name, tokens, util::sleep};
 use crate::low_level::secure_device::SecureDevice;
 
 pub struct OpalSession<'d> {
@@ -147,7 +142,7 @@ impl<'d> OpalSession<'d> {
         self.device
             .proto()
             .secure_send(self.protocol, com_id, buffer.as_mut())
-            .map_err(|e| e.status())?;
+            .fix(info!())?;
 
         let mut buffer = crate::util::alloc_uninit_aligned(2048, self.device.proto().align());
 
@@ -158,7 +153,7 @@ impl<'d> OpalSession<'d> {
             self.device
                 .proto()
                 .secure_recv(self.protocol, com_id, &mut buffer)
-                .map_err(|e| e.status())?;
+                .fix(info!())?;
 
             header = core::ptr::read(buffer.as_ptr() as _);
 
@@ -189,7 +184,7 @@ impl<'d> OpalSession<'d> {
         {
             let code = StatusCode(response.get_uint(len - 4) as _);
             if code != StatusCode::SUCCESS {
-                Err(code.into())
+                Err(OpalError::Status(code).into())
             } else {
                 Ok(response)
             }

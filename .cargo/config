@@ -3,6 +3,7 @@ build-std = ['core', 'compiler_builtins', 'alloc']
 
 [build]
 target = 'x86_64-unknown-uefi'
+rustflags = "-C target-feature=-soft-float"
 
 [target.x86_64-unknown-uefi]
 runner = 'scripts/runner.sh'

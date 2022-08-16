@@ -23,6 +23,10 @@ impl NvmeDevice {
         }
         .into())
     }
+
+    pub fn serial_num(&self) -> &[u8] {
+        &self.serial_num
+    }
 }
 
 fn recv_serial_num(passthru: *mut NvmExpressPassthru) -> uefi::Result<Vec<u8>> {

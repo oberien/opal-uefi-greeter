@@ -1,14 +1,17 @@
 use alloc::string::String;
 use alloc::vec::Vec;
 use core::fmt::Write;
+use core::time::Duration;
 use uefi::proto::console::text::{Key, ScanCode};
 use uefi::table::{Boot, SystemTable};
 use uefi::{CStr16, Status};
 use uefi::table::runtime::ResetType;
-use crate::{info, Result, ResultFixupExt};
+use crate::{info, Result, ResultFixupExt, util};
 
 /// options is a Vec<(selectable, String)>; returns the chosen index within the options-vec
 pub fn choose(st: &mut SystemTable<Boot>, options: &Vec<(bool, String)>) -> Result<usize> {
+    consume_old_keypresses(st)?;
+
     fn next_selectable<T>(current: usize, options: &[(bool, T)], rev: bool) -> usize {
         let dir = match rev {
             false => 1i32,
@@ -51,7 +54,7 @@ pub fn choose(st: &mut SystemTable<Boot>, options: &Vec<(bool, String)>) -> Resu
         st.stdout().write_char('>').unwrap();
 
         loop {
-            match crate::input::key(st)? {
+            match key(st)? {
                 Key::Special(ScanCode::DOWN) => {
                     chosen = next_selectable(chosen, &options, false);
                     break;
@@ -73,10 +76,24 @@ pub fn choose(st: &mut SystemTable<Boot>, options: &Vec<(bool, String)>) -> Resu
 }
 
 pub fn password(st: &mut SystemTable<Boot>) -> Result<String> {
+    consume_old_keypresses(st)?;
     read(st, Some('*'))
 }
 pub fn line(st: &mut SystemTable<Boot>) -> Result<String> {
+    consume_old_keypresses(st)?;
     read(st, None)
+}
+fn consume_old_keypresses(st: &mut SystemTable<Boot>) -> Result<()> {
+    // yield to let UEFI queue all stale key events
+    util::sleep(Duration::from_millis(10));
+    loop {
+        match st.stdin().read_key().fix(info!())? {
+            Some(key) => log::trace!("consumed stale key: {key:?}"),
+            None => break,
+        }
+    }
+
+    Ok(())
 }
 pub fn key(st: &mut SystemTable<Boot>) -> Result<Key> {
     let mut wait_for_key = [unsafe { st.stdin().wait_for_key_event().unsafe_clone() }];
@@ -95,7 +112,7 @@ fn read(st: &mut SystemTable<Boot>, replacement_char: Option<char>) -> Result<St
     loop {
         match key(st)? {
             // cr / lf
-            Key::Printable(k) if [0xD, 0xA].contains(&u16::from(k)) => {
+            Key::Printable(k) if [0xD, 0xA].contains(&u16::from(k)) && !data.is_empty() => {
                 write_char(st, 0x0D)?;
                 write_char(st, 0x0A)?;
                 break Ok(data);
