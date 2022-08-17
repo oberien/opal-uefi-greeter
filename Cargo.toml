@@ -40,8 +40,8 @@ acid_io = { git = "https://github.com/oberien/acid_io" }
 positioned-io2 = { git = "https://github.com/oberien/positioned-io2", branch = "no_std" }
 ext4 = { git = "https://github.com/oberien/ext4-rs", branch = "no_std" }
 #ext4 = { path = "../ext4-rs" }
-#luks2 = { git = "https://github.com/oberien/luks2" }
-luks2 = { path = "../luks2" }
+luks2 = { git = "https://github.com/oberien/luks2" }
+#luks2 = { path = "../luks2" }
 xts-mode = { git = "https://github.com/oberien/xts-mode" }
 bootsector = { git = "https://github.com/oberien/bootsector" }
 #lvm2 = { path = "../rust-lvm2" }

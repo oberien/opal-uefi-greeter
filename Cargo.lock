@@ -352,6 +352,7 @@ dependencies = [
 [[package]]
 name = "luks2"
 version = "0.5.0"
+source = "git+https://github.com/oberien/luks2#f1375fc046e01e36816b518538b38ee3f3b65c23"
 dependencies = [
  "acid_io",
  "aes",
