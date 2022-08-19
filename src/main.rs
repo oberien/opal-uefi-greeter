@@ -12,7 +12,6 @@ extern crate alloc;
 // make sure to link this
 extern crate rlibc;
 
-use alloc::collections::btree_map::Entry;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 use uefi::table::boot::{AllocateType, LoadImageSource, MemoryType};
@@ -23,6 +22,7 @@ use ext4::SuperBlock;
 use initramfs::{Archive, Initramfs};
 use log::LevelFilter;
 use luks2::{LuksDevice, LuksHeader};
+use luks2::error::LuksError;
 use lvm2::Lvm2;
 use positioned_io2::SeekWrapper;
 use uefi::Handle;
@@ -217,6 +217,7 @@ fn run(image_handle: Handle, st: &mut SystemTable<Boot>) -> Result {
 }
 
 fn resolve_and_read_file(st: &mut SystemTable<Boot>, config: &Config, file: &File) -> Result<Vec<u8>> {
+    log::info!("fetching `{}` from `{}`", file.file, file.partition);
     let mut partitions = Vec::new();
     let mut current = &file.partition;
     loop {
@@ -228,7 +229,9 @@ fn resolve_and_read_file(st: &mut SystemTable<Boot>, config: &Config, file: &Fil
         }
     }
     partitions.reverse();
-    find_read_file(st, config, &partitions, &file.file)
+    let res = find_read_file(st, config, &partitions, &file.file);
+    log::info!("fetched `{}` from `{}`", file.file, file.partition);
+    res
 }
 
 fn find_read_file(st: &mut SystemTable<Boot>, config: &Config, partitions: &[&Partition], file: &str) -> Result<Vec<u8>> {
@@ -307,7 +310,7 @@ fn find_read_file_internal(st: &mut SystemTable<Boot>, reader: &mut dyn ReadSeek
             let keyslot = match &partition.keyslot {
                 Some(name) => &config.keyslots[name],
                 None => {
-                    log::error!("{}: no keyslot defined for luks", partition.name);
+                    log::error!("{}: no keyslot defined for luks in `config.toml`", partition.name);
                     return Err(Error::FileNotFound);
                 }
             };
@@ -316,8 +319,17 @@ fn find_read_file_internal(st: &mut SystemTable<Boot>, reader: &mut dyn ReadSeek
             let mut luks = match master_key {
                 Some(master_key) => LuksDevice::from_device_with_master_key(reader, master_key, 512)?,
                 None => {
-                    let password = get_password_of_keyslot(st, config, &keyslot)?;
-                    let luks = LuksDevice::from_device(reader, &password, 512)?;
+                    let mut cached = Cache::Cached;
+                    let luks = loop {
+                        let password = get_password_of_keyslot(st, config, &keyslot, cached)?;
+                        match LuksDevice::from_device(&mut *reader, &password, 512) {
+                            Ok(luks) => break luks,
+                            Err(LuksError::InvalidPassword) => log::error!("Invalid Password, try again!"),
+                            Err(e) => return Err(e.into()),
+                        }
+                        reader.rewind()?;
+                        cached = Cache::Discard;
+                    };
                     config.luks_masterkey_buffer.borrow_mut().insert(partition.uuid.clone(), luks.master_key());
                     luks
                 }
@@ -380,11 +392,20 @@ fn find_read_file_internal(st: &mut SystemTable<Boot>, reader: &mut dyn ReadSeek
     Err(Error::FileNotFound)
 }
 
-fn get_password_of_keyslot(st: &mut SystemTable<Boot>, config: &Config, keyslot: &Keyslot) -> Result<Vec<u8>> {
+#[derive(Debug, Copy, Clone)]
+enum Cache {
+    Cached,
+    Discard,
+}
+
+fn get_password_of_keyslot(st: &mut SystemTable<Boot>, config: &Config, keyslot: &Keyslot, cached: Cache) -> Result<Vec<u8>> {
     // we can't use entry API here as we need to drop the borrow when searching for keyfiles
     // in case those are again on an encrypted partition
-    if let Some(key) = config.keyslot_buffer.borrow().get(&keyslot.name) {
-        return Ok(key.clone());
+    match cached {
+        Cache::Cached => if let Some(key) = config.keyslot_buffer.borrow().get(&keyslot.name) {
+            return Ok(key.clone());
+        },
+        Cache::Discard => (),
     }
 
     let password = match &keyslot.source {
