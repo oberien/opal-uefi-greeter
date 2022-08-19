@@ -345,7 +345,8 @@ fn find_read_file_internal(st: &mut SystemTable<Boot>, reader: &mut dyn ReadSeek
     }
     reader.rewind()?;
 
-    match SuperBlock::new(SeekWrapper::new(&mut *reader)) {
+    let options = ext4::Options { checksums: ext4::Checksums::Enabled };
+    match SuperBlock::new_with_options(SeekWrapper::new(&mut *reader), &options) {
         Ok(ext4) if Uuid::from_slice(&ext4.uuid).unwrap().to_string() == partition.uuid => {
             log::debug!("{}: found ext4 with correct uuid {}", partition.name, partition.uuid);
             if partitions.len() != 1 {
