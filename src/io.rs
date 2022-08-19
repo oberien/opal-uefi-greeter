@@ -104,19 +104,19 @@ pub struct PartialReader<T: Read + Seek> {
     size: u64,
     cursor: u64,
     /// if we need to seek to 0 at first read
-    reset: bool,
+    need_reset: bool,
 }
 
 impl<T: Read + Seek> PartialReader<T> {
     pub fn new(inner: T, start: u64, size: u64) -> PartialReader<T> {
-        PartialReader { inner, start, size, cursor: 0, reset: true }
+        PartialReader { inner, start, size, cursor: 0, need_reset: true }
     }
 }
 
 impl<T: Read + Seek> Read for PartialReader<T> {
     fn read(&mut self, mut dst: &mut [u8]) -> acid_io::Result<usize> {
-        if self.reset {
-            self.reset = false;
+        if self.need_reset {
+            self.need_reset = false;
             self.seek(SeekFrom::Start(0))?;
         }
         if self.cursor >= self.size {
@@ -133,6 +133,7 @@ impl<T: Read + Seek> Read for PartialReader<T> {
 }
 impl<T: Read + Seek> Seek for PartialReader<T> {
     fn seek(&mut self, pos: SeekFrom) -> acid_io::Result<u64> {
+        self.need_reset = false;
         let pos = match pos {
             SeekFrom::Start(pos) => self.inner.seek(SeekFrom::Start(self.start.checked_add(pos).unwrap()))?,
             SeekFrom::Current(pos) => self.inner.seek(SeekFrom::Current(pos))?,
