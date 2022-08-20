@@ -1,6 +1,7 @@
 use crate::low_level::opal::StatusCode;
 use alloc::string::String;
 use core::fmt::{Debug, Display, Formatter};
+use core::str::Utf8Error;
 use luks2::error::LuksError;
 use uefi::Status;
 
@@ -40,6 +41,7 @@ pub enum Error {
     ImageNotFound(String),
     ImageNotPeCoff,
     Luks(#[from] LuksError),
+    Utf8(#[from] Utf8Error),
 }
 
 impl From<StatusCode> for Error {

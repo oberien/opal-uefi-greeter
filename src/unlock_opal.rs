@@ -1,21 +1,17 @@
-use alloc::string::String;
-use alloc::vec::Vec;
 use core::fmt::Write;
 use core::time::Duration;
-use uefi::proto::device_path::DevicePath;
-use uefi::proto::media::block::BlockIO;
 use uefi::Status;
 use uefi::table::{Boot, SystemTable};
 use uefi::table::runtime::ResetType;
-use crate::{Error, info, NvmeDevice, NvmExpressPassthru, OpalError, OpalSession, SecureDevice, sleep, StatusCode, uid, Result, LockingState, ResultFixupExt};
+use crate::{Error, info, OpalError, OpalSession, SecureDevice, sleep, StatusCode, uid, Result, LockingState, ResultFixupExt};
 
 /// Returns Ok(Ok((())) if unlocking was successful, Ok(Err(())) if the password was wrong
-pub fn try_unlock_device(st: &mut SystemTable<Boot>, device: &mut SecureDevice, password: String) -> Result<core::result::Result<(), ()>> {
+pub fn try_unlock_device(st: &mut SystemTable<Boot>, device: &mut SecureDevice, password: &[u8]) -> Result<core::result::Result<(), ()>> {
     let mut hash = vec![0; 32];
 
     // as in sedutil-cli, maybe will change
     pbkdf2::pbkdf2::<hmac::Hmac<sha1::Sha1>>(
-        password.as_bytes(),
+        password,
         device.proto().serial_num(),
         75000,
         &mut hash,
@@ -61,53 +57,3 @@ fn pretty_session<'d>(
         e => e.map(Some),
     }
 }
-
-pub(crate) fn find_secure_devices(st: &mut SystemTable<Boot>) -> uefi::Result<Vec<SecureDevice>> {
-    let mut result = Vec::new();
-
-    for handle in st.boot_services().find_handles::<BlockIO>()? {
-        let blockio = st.boot_services().handle_protocol::<BlockIO>(handle)?;
-
-        if unsafe { &mut *blockio.get() }
-            .media()
-            .is_logical_partition()
-        {
-            continue;
-        }
-
-        let device_path = st
-            .boot_services()
-            .handle_protocol::<DevicePath>(handle)?;
-        let device_path = unsafe { &mut &*device_path.get() };
-
-        if let Ok(nvme) = st
-            .boot_services()
-            .locate_device_path::<NvmExpressPassthru>(device_path)
-        {
-            let nvme = st
-                .boot_services()
-                .handle_protocol::<NvmExpressPassthru>(nvme)?;
-
-            result.push(SecureDevice::new(handle, NvmeDevice::new(nvme.get())?)?)
-        }
-
-        // todo something like that:
-        //
-        // if let Ok(ata) = st
-        //     .boot_services()
-        //     .locate_device_path::<AtaExpressPassthru>(device_path)
-        //     .log_warning()
-        // {
-        //     let ata = st
-        //         .boot_services()
-        //         .handle_protocol::<AtaExpressPassthru>(ata)?
-        //         .log();
-        //
-        //     result.push(SecureDevice::new(handle, AtaDevice::new(ata.get())?.log())?.log())
-        // }
-        //
-        // ..etc
-    }
-    Ok(result.into())
-}
-

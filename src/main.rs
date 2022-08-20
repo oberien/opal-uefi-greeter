@@ -83,10 +83,12 @@ fn run(image_handle: Handle, st: &mut SystemTable<Boot>) -> Result {
 
     let options = config.boot_entries.iter().map(|e| (true, e.name.clone())).collect();
     let selected = ui::choose(st, &options)?;
-    let BootEntry { name, file, initrd, additional_initrd_files, options, default } = &config.boot_entries[selected];
+    let BootEntry { name, file: efi_file, initrd, additional_initrd_files, options, default } = &config.boot_entries[selected];
 
-
-    let efi_image = resolve_and_read_file(st, &config, file)?;
+    let efi_image = resolve_and_read_file(st, &config, efi_file)?;
+    if efi_image.get(0..2) != Some(&[0x4d, 0x5a]) {
+        return Err(Error::ImageNotPeCoff);
+    }
 
     let mut initramfs = Initramfs::new();
 
@@ -121,11 +123,6 @@ fn run(image_handle: Handle, st: &mut SystemTable<Boot>) -> Result {
 
     // LoadedImage
 
-    // let dp = st
-    //     .boot_services()
-    //     .handle_protocol::<DevicePath>(partition)
-    //     .fix(info!())?;
-    // let dp = unsafe { &mut *dp.get() };
     let loaded_image_handle = st
         .boot_services()
         .load_image(image_handle, LoadImageSource::FromBuffer { file_path: None, buffer: &efi_image })
@@ -138,8 +135,6 @@ fn run(image_handle: Handle, st: &mut SystemTable<Boot>) -> Result {
 
     // chain-load efistub
 
-    // let initrdmem = ;
-    // let options: Vec<_> = config.options.iter().map(|a| a.as_str()).chain([&*initrdmem, "loglevel=8"]).collect();
     let mut options = options.clone().unwrap_or_default();
     options.push_str(&format!(" initrdmem={initramfs_addr},{}", serialized.len()));
     log::debug!("passing options: `{options}`");
@@ -147,7 +142,7 @@ fn run(image_handle: Handle, st: &mut SystemTable<Boot>) -> Result {
     unsafe { loaded_image.set_load_options(options.as_ptr() as *const u8, options.num_bytes() as _) };
 
     if config.log_level >= LevelFilter::Debug {
-        log::debug!("loading image {} on \"uiae\" + Enter", file.file);
+        log::debug!("loading image {} on \"uiae\" + Enter", efi_file.file);
         loop {
             if ui::line(st).unwrap() == "uiae" {
                 break;
@@ -159,25 +154,6 @@ fn run(image_handle: Handle, st: &mut SystemTable<Boot>) -> Result {
         .start_image(loaded_image_handle)
         .fix(info!())?;
 
-    // let devices = unlock_opal::find_secure_devices(st).fix(info!())?;
-    //
-    // for mut device in devices {
-    //     if !device.recv_locked().fix(info!())? {
-    //         continue;
-    //     }
-    //     st.stdout().write_str("password: ").unwrap();
-    //     loop {
-    //         let password = ui::password(st)?;
-    //
-    //         match unlock_opal::try_unlock_device(st, &mut device, password)? {
-    //             Ok(()) => break,
-    //             Err(()) => (),
-    //         }
-    //
-    //         st.stdout().write_str("bad password, retry: ").unwrap();
-    //     };
-    // }
-    //
     // let boot_partitions = find_boot_partitions(st)?;
     //
     // let mut boot_options = Vec::new();
@@ -206,12 +182,6 @@ fn run(image_handle: Handle, st: &mut SystemTable<Boot>) -> Result {
     // let (partuuid, partition, filename) = bootable_things[index].clone();
     //
     // let filename = CString16::try_from(&*filename).or(Err(Error::EfiImageNameNonUtf16))?;
-    //
-    // let buf = util::read_full_file(st, partition, &filename)?;
-    // if buf.get(0..2) != Some(&[0x4d, 0x5a]) {
-    //     return Err(Error::ImageNotPeCoff);
-    // }
-
 
     Ok(())
 }
@@ -234,42 +204,65 @@ fn resolve_and_read_file(st: &mut SystemTable<Boot>, config: &Config, file: &Fil
     res
 }
 
-fn find_read_file(st: &mut SystemTable<Boot>, config: &Config, partitions: &[&Partition], file: &str) -> Result<Vec<u8>> {
+fn find_read_file(st: &mut SystemTable<Boot>, config: &Config, mut partitions: &[&Partition], file: &str) -> Result<Vec<u8>> {
     for (i, handle) in st.boot_services().find_handles::<BlockIO>().fix(info!())?.into_iter().enumerate() {
         let blockio = st.boot_services().handle_protocol::<BlockIO>(handle).fix(info!())?;
         let media = unsafe { &* blockio.get() }.media();
         let start_lba = media.lowest_aligned_lba();
         let end_lba = media.last_block();
+        let is_logical_partition = media.is_logical_partition();
 
-        let is_logical_partition = unsafe { &mut *blockio.get() }.media().is_logical_partition();
         if is_logical_partition {
             continue;
         }
 
-        log::error!("probing blockio {start_lba:#x} - {end_lba:#x}");
+        log::debug!("probing blockio #{i} {start_lba:#x} - {end_lba:#x}");
+
+        // probe OPAL
+        let device_path = st
+            .boot_services()
+            .handle_protocol::<DevicePath>(handle).fix(info!())?;
+        let device_path = unsafe { &mut &*device_path.get() };
+
+        if let Ok(nvme) = st
+            .boot_services()
+            .locate_device_path::<NvmExpressPassthru>(device_path)
+        {
+            let nvme = st
+                .boot_services()
+                .handle_protocol::<NvmExpressPassthru>(nvme).fix(info!())?;
+            let nvme = NvmeDevice::new(nvme.get()).fix(info!())?;
+            let serial = core::str::from_utf8(nvme.serial_num())?.trim();
+            log::debug!("found nvme with serial: `{}`", serial);
+
+            // decrypt
+            if partitions[0].uuid == serial && partitions[0].keyslot.is_some() {
+                let mut secure_device = SecureDevice::new(handle, nvme).fix(info!())?;
+                let keyslot = partitions[0].keyslot.as_deref().unwrap();
+                let keyslot = &config.keyslots[keyslot];
+                let mut cached = Cache::Cached;
+                loop {
+                    let password = get_password_of_keyslot(st, config, keyslot, cached)?;
+                    match unlock_opal::try_unlock_device(st, &mut secure_device, &password) {
+                        Ok(Ok(())) => break,
+                        Ok(Err(())) => log::error!("Invalid Password, try again!"),
+                        Err(e) => return Err(e),
+                    }
+                    cached = Cache::Discard;
+                };
+                partitions = &partitions[1..];
+            }
+        }
+
+        // probe partitions and stuff
+        // recreate blockio for borrow-checker
+        let blockio = st.boot_services().handle_protocol::<BlockIO>(handle).fix(info!())?;
         let mut reader = BlockIoReader::new(unsafe { &* blockio.get() }, start_lba, end_lba);
         match find_read_file_internal(st, &mut reader, config, partitions, file) {
             Ok(file) => return Ok(file),
             Err(e) => log::trace!("file was not found on BlockIO #{i}: {e:?}"),
         }
 
-        // let device_path = st
-        //     .boot_services()
-        //     .handle_protocol::<DevicePath>(handle).fix(info!())?;
-        // let device_path = unsafe { &mut &*device_path.get() };
-        //
-        // if let Ok(nvme) = st
-        //     .boot_services()
-        //     .locate_device_path::<NvmExpressPassthru>(device_path)
-        // {
-        //     let nvme = st
-        //         .boot_services()
-        //         .handle_protocol::<NvmExpressPassthru>(nvme).fix(info!())?;
-        //     let nvme = NvmeDevice::new(nvme.get()).fix(info!())?;
-        //     log::error!("found nvme with serial: {:?}", nvme.serial_num());
-        //
-        //     // result.push(SecureDevice::new(handle, NvmeDevice::new(nvme.get())?)?)
-        // }
     }
 
     Err(Error::FileNotFound)

@@ -7,6 +7,6 @@ mkdir -p boot
 sudo mount /dev/disk/by-uuid/BA45-36A5 boot
 sudo mkdir -p boot/EFI/BOOT/
 sudo cp target/x86_64-unknown-uefi/release/opal-uefi-greeter.efi boot/EFI/BOOT/BOOTX64.efi
-sudo cp config-example.toml boot/config.toml
+#sudo cp config-example.toml boot/config.toml
 sudo umount boot
 sync
