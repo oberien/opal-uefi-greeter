@@ -154,6 +154,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "core2"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b49ba7ef1ad6107f8824dbe97de947cbaac53c44e7f9756a1fba0d37c1eec505"
+dependencies = [
+ "memchr",
+]
+
+[[package]]
 name = "cpufeatures"
 version = "0.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -328,6 +337,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "io-compat"
+version = "0.1.0"
+source = "git+https://github.com/main--/rust-io-compat#4aee984963a60667e5acf0b8c3936b102b1e5c80"
+dependencies = [
+ "acid_io",
+ "cfg-if",
+ "core2",
+ "fatfs",
+]
+
+[[package]]
 name = "itoa"
 version = "1.0.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -417,6 +437,7 @@ dependencies = [
  "fatfs",
  "hmac",
  "initramfs",
+ "io-compat",
  "log",
  "luks2",
  "lvm2",

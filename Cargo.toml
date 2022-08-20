@@ -33,7 +33,8 @@ thiserror-no-std = { version = "2.0.2", default-features = false }
 bootsector = { version = "0.2.0", default-features = false }
 uuid = { version = "1.1.2", default-features = false }
 either = { version = "1.7.0", default-features = false }
-fatfs = { git = "https://github.com/rafalh/rust-fatfs", default-features = false }
+fatfs = { git = "https://github.com/rafalh/rust-fatfs", default-features = false, features = ["lfn", "alloc"] }
+io-compat = { git = "https://github.com/main--/rust-io-compat", default-features = false, features = ["alloc", "acid_io", "fatfs"] }
 
 [patch.crates-io]
 acid_io = { git = "https://github.com/oberien/acid_io" }

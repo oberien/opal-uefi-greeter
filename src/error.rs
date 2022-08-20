@@ -4,6 +4,7 @@ use core::fmt::{Debug, Display, Formatter};
 use core::str::Utf8Error;
 use luks2::error::LuksError;
 use uefi::Status;
+use crate::ErrorWrapper;
 
 pub type Result<T = ()> = core::result::Result<T, Error>;
 
@@ -42,6 +43,7 @@ pub enum Error {
     ImageNotPeCoff,
     Luks(#[from] LuksError),
     Utf8(#[from] Utf8Error),
+    Fatfs(#[from] fatfs::Error<ErrorWrapper>),
 }
 
 impl From<StatusCode> for Error {

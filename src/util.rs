@@ -17,7 +17,7 @@ pub fn sleep(duration: Duration) {
     // duration.as_nanos() works with u128 which is unsupported lol
     // let nanos = duration.as_secs() * 1_000_000_000 + duration.subsec_nanos() as u64;
     let nanos = duration.as_nanos() / 100;
-    bt.set_timer(&event, TimerTrigger::Relative(nanos as u64)).unwrap();
+    bt.set_timer(&event, TimerTrigger::Periodic(nanos as u64)).unwrap();
 
     bt.wait_for_event(&mut [event]).unwrap();
 }

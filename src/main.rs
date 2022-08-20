@@ -16,10 +16,11 @@ use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 use uefi::table::boot::{AllocateType, LoadImageSource, MemoryType};
 use core::{convert::TryFrom, fmt::Write, slice};
-use acid_io::{Read, Seek};
+use acid_io::{ErrorKind, IoSliceMut, Read, Seek, SeekFrom};
 use bootsector::{ReadGPT, ReadMBR, SectorSize};
 use ext4::SuperBlock;
 use initramfs::{Archive, Initramfs};
+use io_compat::AcidReadCompat;
 use log::LevelFilter;
 use luks2::{LuksDevice, LuksHeader};
 use luks2::error::LuksError;
@@ -47,9 +48,8 @@ use crate::{
     low_level::opal::{LockingState, session::OpalSession, StatusCode, uid},
     util::sleep,
 };
-use crate::config::{AdditionalInitrdFile, BootEntry, File, Keyslot, KeyslotSource, Partition};
+use crate::config::{AdditionalInitrdFile, BootEntry, File, Initrd, Keyslot, KeyslotSource, Partition};
 use crate::io::{BlockIoReader, PartialReader};
-use sha1::{Sha1, Digest};
 
 pub mod config;
 pub mod error;
@@ -64,10 +64,15 @@ fn main(image_handle: Handle, mut st: SystemTable<Boot>) -> Status {
     if uefi_services::init(&mut st).is_err() {
         log::error!("Failed to initialize UEFI services");
     }
-    if let Err(err) = run(image_handle, &mut st) {
-        log::error!("Error: {:?}", err);
+    loop {
+       match run(image_handle, &mut st) {
+           Ok(()) => (),
+           Err(err) => {
+               log::error!("Error: {:?}", err);
+               break
+           }
+       }
     }
-    log::error!("Encountered error. Reboot on Enter...");
     let _ = ui::line(&mut st);
     st.runtime_services()
         .reset(ResetType::Cold, Status::SUCCESS, None)
@@ -76,12 +81,16 @@ fn main(image_handle: Handle, mut st: SystemTable<Boot>) -> Status {
 fn run(image_handle: Handle, st: &mut SystemTable<Boot>) -> Result {
     // set size of console
     config_stdout(st).fix(info!())?;
+    log::trace!("configured stdout");
     // disable watchdog
     st.boot_services().set_watchdog_timer(0, 0x31337, None).fix(info!())?;
+    log::trace!("disabled watchdog");
 
     let config: Config = config::load(image_handle, st)?;
+    log::trace!("loaded config");
 
     let options = config.boot_entries.iter().map(|e| (true, e.name.clone())).collect();
+    log::trace!("created chooser-options");
     let selected = ui::choose(st, &options)?;
     let BootEntry { name, file: efi_file, initrd, additional_initrd_files, options, default } = &config.boot_entries[selected];
 
@@ -90,36 +99,11 @@ fn run(image_handle: Handle, st: &mut SystemTable<Boot>) -> Result {
         return Err(Error::ImageNotPeCoff);
     }
 
-    let mut initramfs = Initramfs::new();
-
-    for initrd in initrd.iter().flat_map(|initrd| initrd.iter()) {
-        log::debug!("loading initrd file {}", initrd.file);
-        let content = resolve_and_read_file(st, &config, initrd)?;
-        log::debug!("hash of loaded initrd file: {:x?}", Sha1::new().chain(&content).finalize());
-        log::debug!("hash of loaded efi_image file: {:x?}", Sha1::new().chain(&efi_image).finalize());
-        initramfs.add_raw_archive(content);
-    }
-
-    let mut additional_files = Archive::new();
-    for AdditionalInitrdFile { source, target_file } in additional_initrd_files.iter().flatten() {
-        log::debug!("loading additional initrd file {}", source.file);
-        let content = resolve_and_read_file(st, &config, source)?;
-        additional_files.add_file(initramfs::File::new(target_file.clone(), content));
-    }
-    initramfs.add_archive(additional_files);
-
-    let mut serialized = Vec::new();
-    initramfs.write(&mut serialized);
-
-    let num_pages = (serialized.len() + 4095) / 4096;
-    // Allocate initramfs in RUNTIME_SERVICES_DATA such that it is available after the EFISTUB calls exit_boot_services.
-    // After reallocating the RAMDISK, the kernel frees our memory in `reserve_initrd` via `memblock_phys_free`.
-    let initramfs_addr = st.boot_services()
-        .allocate_pages(AllocateType::AnyPages, MemoryType::RUNTIME_SERVICES_DATA, num_pages)
-        .fix(info!())?;
-    let buffer = unsafe { slice::from_raw_parts_mut(initramfs_addr as *mut u8, num_pages * 4096) };
-    (&mut buffer[..serialized.len()]).copy_from_slice(&serialized);
-    log::debug!("initramfs loaded");
+    let initramfs_addr = if initrd.is_some() || additional_initrd_files.is_some() {
+        Some(construct_initramfs(st, &config, initrd, additional_initrd_files)?)
+    } else {
+        None
+    };
 
     // LoadedImage
 
@@ -136,7 +120,9 @@ fn run(image_handle: Handle, st: &mut SystemTable<Boot>) -> Result {
     // chain-load efistub
 
     let mut options = options.clone().unwrap_or_default();
-    options.push_str(&format!(" initrdmem={initramfs_addr},{}", serialized.len()));
+    if let Some((initramfs_addr, len)) = initramfs_addr {
+        options.push_str(&format!(" initrdmem={initramfs_addr},{len}"));
+    }
     log::debug!("passing options: `{options}`");
     let options = CString16::try_from(&*options).or(Err(Error::EfiImageNameNonUtf16))?;
     unsafe { loaded_image.set_load_options(options.as_ptr() as *const u8, options.num_bytes() as _) };
@@ -184,6 +170,38 @@ fn run(image_handle: Handle, st: &mut SystemTable<Boot>) -> Result {
     // let filename = CString16::try_from(&*filename).or(Err(Error::EfiImageNameNonUtf16))?;
 
     Ok(())
+}
+
+fn construct_initramfs(st: &mut SystemTable<Boot>, config: &Config, initrd: &Option<Initrd>, additional_initrd_files: &Option<Vec<AdditionalInitrdFile>>) -> Result<(u64, usize)> {
+    let mut initramfs = Initramfs::new();
+
+    for initrd in initrd.iter().flat_map(|initrd| initrd.iter()) {
+        log::debug!("loading initrd file {}", initrd.file);
+        let content = resolve_and_read_file(st, &config, initrd)?;
+        initramfs.add_raw_archive(content);
+    }
+
+    let mut additional_files = Archive::new();
+    for AdditionalInitrdFile { source, target_file } in additional_initrd_files.iter().flatten() {
+        log::debug!("loading additional initrd file {}", source.file);
+        let content = resolve_and_read_file(st, &config, source)?;
+        additional_files.add_file(initramfs::File::new(target_file.clone(), content));
+    }
+    initramfs.add_archive(additional_files);
+
+    let mut serialized = Vec::new();
+    initramfs.write(&mut serialized);
+
+    let num_pages = (serialized.len() + 4095) / 4096;
+    // Allocate initramfs in RUNTIME_SERVICES_DATA such that it is available after the EFISTUB calls exit_boot_services.
+    // After reallocating the RAMDISK, the kernel frees our memory in `reserve_initrd` via `memblock_phys_free`.
+    let initramfs_addr = st.boot_services()
+        .allocate_pages(AllocateType::AnyPages, MemoryType::RUNTIME_SERVICES_DATA, num_pages)
+        .fix(info!())?;
+    let buffer = unsafe { slice::from_raw_parts_mut(initramfs_addr as *mut u8, num_pages * 4096) };
+    (&mut buffer[..serialized.len()]).copy_from_slice(&serialized);
+    log::debug!("initramfs loaded");
+    Ok((initramfs_addr, serialized.len()))
 }
 
 fn resolve_and_read_file(st: &mut SystemTable<Boot>, config: &Config, file: &File) -> Result<Vec<u8>> {
@@ -271,6 +289,49 @@ fn find_read_file(st: &mut SystemTable<Boot>, config: &Config, mut partitions: &
 trait ReadSeek: Read + Seek {}
 impl<T: Read + Seek> ReadSeek for T {}
 
+#[derive(Debug)]
+pub struct ErrorWrapper(acid_io::Error);
+impl fatfs::IoError for ErrorWrapper {
+    fn is_interrupted(&self) -> bool {
+        self.0.kind() == ErrorKind::Interrupted
+    }
+    fn new_unexpected_eof_error() -> Self {
+        ErrorWrapper(acid_io::Error::new(acid_io::ErrorKind::UnexpectedEof, "failed to fill whole buffer"))
+    }
+
+    fn new_write_zero_error() -> Self {
+        ErrorWrapper(acid_io::Error::new(acid_io::ErrorKind::WriteZero, "failed to write whole buffer"))
+    }
+}
+
+struct IgnoreWriteWrapper<T>(T);
+impl<T: Read> fatfs::Read for IgnoreWriteWrapper<T> {
+    fn read(&mut self, buf: &mut [u8]) -> core::result::Result<usize, ErrorWrapper> {
+        self.0.read(buf).map_err(ErrorWrapper)
+    }
+}
+impl<T: Seek> fatfs::Seek for IgnoreWriteWrapper<T> {
+    fn seek(&mut self, pos: fatfs::SeekFrom) -> core::result::Result<u64, ErrorWrapper> {
+        let pos = match pos {
+            fatfs::SeekFrom::Start(pos) => SeekFrom::Start(pos),
+            fatfs::SeekFrom::Current(pos) => SeekFrom::Current(pos),
+            fatfs::SeekFrom::End(pos) => SeekFrom::End(pos),
+        };
+        self.0.seek(pos).map_err(ErrorWrapper)
+    }
+}
+impl<T> fatfs::IoBase for IgnoreWriteWrapper<T> { type Error = ErrorWrapper; }
+impl<T> fatfs::Write for IgnoreWriteWrapper<T> {
+    fn write(&mut self, buf: &[u8]) -> core::result::Result<usize, ErrorWrapper> {
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> core::result::Result<(), ErrorWrapper> {
+        Ok(())
+    }
+}
+
+
 fn find_read_file_internal(st: &mut SystemTable<Boot>, reader: &mut dyn ReadSeek, config: &Config, partitions: &[&Partition], file: &str) -> Result<Vec<u8>> {
     if partitions.is_empty() {
         return Err(Error::FileNotFound);
@@ -353,8 +414,33 @@ fn find_read_file_internal(st: &mut SystemTable<Boot>, reader: &mut dyn ReadSeek
             reader.read_to_end(&mut data).unwrap();
             return Ok(data);
         }
-        Ok(ext4) => log::trace!("found luks with wrong id; expected {}, got {}", partition.uuid, Uuid::from_slice(&ext4.uuid).unwrap().to_string()),
+        Ok(ext4) => log::trace!("found ext4 with wrong id; expected {}, got {}", partition.uuid, Uuid::from_slice(&ext4.uuid).unwrap().to_string()),
         Err(e) => log::trace!("error trying to parse ext4: {e}"),
+    }
+    reader.rewind()?;
+
+    match fatfs::FileSystem::new(IgnoreWriteWrapper(&mut *reader), fatfs::FsOptions::new()) {
+        Ok(fat) if partition.uuid == format!("{:X}-{:X}", fat.volume_id() >> 16, fat.volume_id() as u16) => {
+            log::debug!("{}: found FAT with correct uuid {}", partition.name, partition.uuid);
+            if partitions.len() != 1 {
+                log::error!("{}: found FAT with correct uuid {} but there are still inner partitions left", partition.name, partition.uuid);
+                return Err(Error::FileNotFound);
+            }
+            let mut file = fat.root_dir().open_file(file)?;
+            log::trace!("start reading file");
+            let mut data = Vec::new();
+            let mut buf = [0u8; 4096];
+            loop {
+                use fatfs::Read as _;
+                let read = file.read(&mut buf)?;
+                if read == 0 { break }
+                data.extend_from_slice(&buf[..read]);
+            }
+            log::trace!("file read");
+            return Ok(data)
+        }
+        Ok(fat) => log::trace!("found FAT with with wrong id; expected {}, got {}", partition.uuid, format!("{:X}-{:X}", fat.volume_id() >> 16, fat.volume_id() as u16)),
+        Err(e) => log::trace!("error trying to parse fat: {e:?}"),
     }
     reader.rewind()?;
 
@@ -380,8 +466,6 @@ fn find_read_file_internal(st: &mut SystemTable<Boot>, reader: &mut dyn ReadSeek
         Err(e) => log::trace!("error trying to parse gpt: {e}"),
     }
     reader.rewind()?;
-
-    // match fatfs::FileSystem::new(&mut *reader, fatfs::FsOptions::new())
 
     Err(Error::FileNotFound)
 }
@@ -417,6 +501,7 @@ fn get_password_of_keyslot(st: &mut SystemTable<Boot>, config: &Config, keyslot:
 
 fn config_stdout(st: &mut SystemTable<Boot>) -> uefi::Result {
     st.stdout().reset(false)?;
+    st.stdout().clear()?;
 
     if let Some(mode) = st.stdout().modes().max_by_key(|m| {
         m.rows() * m.columns()
