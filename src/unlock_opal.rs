@@ -5,17 +5,30 @@ use uefi::table::{Boot, SystemTable};
 use uefi::table::runtime::ResetType;
 use crate::{Error, info, OpalError, OpalSession, SecureDevice, sleep, StatusCode, uid, Result, LockingState, ResultFixupExt};
 
+pub enum PasswordOrRaw<'a> {
+    Password(&'a [u8]),
+    /// Must be 32 bytes
+    Raw(&'a [u8]),
+}
 /// Returns Ok(Ok((())) if unlocking was successful, Ok(Err(())) if the password was wrong
-pub fn try_unlock_device(st: &mut SystemTable<Boot>, device: &mut SecureDevice, password: &[u8]) -> Result<core::result::Result<(), ()>> {
+pub fn try_unlock_device(st: &mut SystemTable<Boot>, device: &mut SecureDevice, password_or_raw: PasswordOrRaw) -> Result<core::result::Result<(), ()>> {
     let mut hash = vec![0; 32];
 
-    // as in sedutil-cli, maybe will change
-    pbkdf2::pbkdf2::<hmac::Hmac<sha1::Sha1>>(
-        password,
-        device.proto().serial_num(),
-        75000,
-        &mut hash,
-    );
+    match password_or_raw {
+        PasswordOrRaw::Password(password) => {
+            // as in sedutil-cli and linuxpba
+            pbkdf2::pbkdf2::<hmac::Hmac<sha1::Sha1>>(
+                password,
+                device.proto().serial_num(),
+                75000,
+                &mut hash,
+            );
+        },
+        PasswordOrRaw::Raw(raw) => {
+            assert_eq!(raw.len(), 32);
+            hash[..].copy_from_slice(raw);
+        }
+    }
 
     {
         let session = pretty_session(st, device, &*hash)?;
@@ -30,6 +43,7 @@ pub fn try_unlock_device(st: &mut SystemTable<Boot>, device: &mut SecureDevice, 
     // reconnect the controller to see
     // the real partition pop up after unlocking
     device.reconnect_controller(st).fix(info!())?;
+    sleep(Duration::from_millis(100));
     Ok(Ok(()))
 }
 

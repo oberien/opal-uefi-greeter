@@ -85,9 +85,7 @@ pub fn line(st: &mut SystemTable<Boot>) -> Result<String> {
 }
 fn consume_old_keypresses(st: &mut SystemTable<Boot>) -> Result<()> {
     // yield to let UEFI queue all stale key events
-    log::trace!("starting sleep for 10ms");
-    // util::sleep(Duration::from_millis(10));
-    log::trace!("stopped sleeping");
+    util::sleep(Duration::from_millis(10));
     loop {
         match st.stdin().read_key().fix(info!())? {
             Some(key) => log::trace!("consumed stale key: {key:?}"),

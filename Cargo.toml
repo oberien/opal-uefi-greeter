@@ -45,4 +45,5 @@ luks2 = { git = "https://github.com/oberien/luks2" }
 #luks2 = { path = "../luks2" }
 xts-mode = { git = "https://github.com/oberien/xts-mode" }
 bootsector = { git = "https://github.com/oberien/bootsector" }
+#bootsector = { path = "../bootsector" }
 #lvm2 = { path = "../rust-lvm2" }

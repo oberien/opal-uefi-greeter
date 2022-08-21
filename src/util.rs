@@ -14,9 +14,10 @@ pub fn sleep(duration: Duration) {
     let bt = unsafe { uefi_services::system_table().as_ref() }.boot_services();
 
     let event = unsafe { bt.create_event(EventType::TIMER, Tpl::APPLICATION, None, None).unwrap() };
-    // duration.as_nanos() works with u128 which is unsupported lol
-    // let nanos = duration.as_secs() * 1_000_000_000 + duration.subsec_nanos() as u64;
-    let nanos = duration.as_nanos() / 100;
+    // duration.as_nanos() works with u128 which is unsupported on some devices lol
+    // let nanos = (duration.as_nanos() / 100) as u64;
+    let nanos = duration.as_secs() * 1_000_000_000 + duration.subsec_nanos() as u64;
+    let nanos = nanos / 100;
     bt.set_timer(&event, TimerTrigger::Periodic(nanos as u64)).unwrap();
 
     bt.wait_for_event(&mut [event]).unwrap();

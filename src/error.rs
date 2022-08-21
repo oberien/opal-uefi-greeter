@@ -4,7 +4,7 @@ use core::fmt::{Debug, Display, Formatter};
 use core::str::Utf8Error;
 use luks2::error::LuksError;
 use uefi::Status;
-use crate::ErrorWrapper;
+use crate::io::ErrorWrapper;
 
 pub type Result<T = ()> = core::result::Result<T, Error>;
 

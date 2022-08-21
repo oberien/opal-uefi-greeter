@@ -1,9 +1,10 @@
 use core::convert::TryFrom;
 use acid_io::{Error, ErrorKind, Read, Seek, SeekFrom};
-use uefi::proto::media::block::BlockIO;
-use crate::error::UefiAcidioWrapper;
-use crate::info;
+#[cfg(target_os = "uefi")] use uefi::proto::media::block::BlockIO;
+#[cfg(target_os = "uefi")] use crate::error::UefiAcidioWrapper;
+#[cfg(target_os = "uefi")] use crate::info;
 
+#[cfg(target_os = "uefi")]
 pub struct BlockIoReader<'a> {
     inner: &'a BlockIO,
     media_id: u32,
@@ -13,6 +14,7 @@ pub struct BlockIoReader<'a> {
     block_size: u64,
 }
 
+#[cfg(target_os = "uefi")]
 impl<'a> BlockIoReader<'a> {
     pub fn new(inner: &'a BlockIO, start_lba: u64, end_lba: u64) -> BlockIoReader<'a> {
         let block_size = inner.media().block_size().into();
@@ -33,7 +35,7 @@ impl<'a> BlockIoReader<'a> {
             .map_err(|e| acid_io::Error::new(ErrorKind::Other, UefiAcidioWrapper(e, info!())))
     }
 }
-
+#[cfg(target_os = "uefi")]
 impl<'a> Read for BlockIoReader<'a> {
     fn read(&mut self, mut dst: &mut [u8]) -> acid_io::Result<usize> {
         if self.cursor >= self.size {
@@ -86,7 +88,7 @@ impl<'a> Read for BlockIoReader<'a> {
         Ok(read)
     }
 }
-
+#[cfg(target_os = "uefi")]
 impl<'a> Seek for BlockIoReader<'a> {
     fn seek(&mut self, pos: SeekFrom) -> acid_io::Result<u64> {
         self.cursor = match pos {
@@ -146,3 +148,115 @@ impl<T: Read + Seek> Seek for PartialReader<T> {
         Ok(self.cursor)
     }
 }
+
+/// Length of the inner Read must not change
+pub struct OptimizedSeek<T> {
+    inner: T,
+    cursor: Option<u64>,
+    end: Option<u64>,
+    total_seeks: u64,
+    unstopped_seeks: u64,
+}
+
+impl<T> OptimizedSeek<T> {
+    pub fn new(inner: T) -> Self {
+        Self { inner, cursor: None, end: None, total_seeks: 0, unstopped_seeks: 0 }
+    }
+    pub fn total_seeks(&self) -> u64 {
+        self.total_seeks
+    }
+    pub fn stopped_seeks(&self) -> u64 {
+        self.total_seeks - self.unstopped_seeks
+    }
+}
+
+impl<T: Read> Read for OptimizedSeek<T> {
+    fn read(&mut self, buf: &mut [u8]) -> acid_io::Result<usize> {
+        let read = self.inner.read(buf)?;
+        if let Some(cursor) = &mut self.cursor {
+            *cursor += u64::try_from(read).unwrap();
+        }
+        Ok(read)
+    }
+}
+impl<T: Seek> Seek for OptimizedSeek<T> {
+    fn seek(&mut self, pos: SeekFrom) -> acid_io::Result<u64> {
+        self.total_seeks += 1;
+        let add_end_offset = |end, offset| {
+            i64::try_from(end).ok()
+                .and_then(|end| end.checked_sub(offset))
+                .and_then(|pos| u64::try_from(pos).ok())
+        };
+        match (self.cursor, self.end, pos) {
+            (Some(cursor), _, SeekFrom::Start(pos)) if pos == cursor => Ok(cursor),
+            (Some(cursor), _, SeekFrom::Current(0)) => Ok(cursor),
+            (Some(cursor), Some(end), SeekFrom::End(offset))
+                if Some(cursor) == add_end_offset(end, offset) => Ok(cursor),
+            (_, _, pos) => {
+                self.unstopped_seeks += 1;
+                let new_pos = self.inner.seek(pos.clone())?;
+                self.cursor = Some(new_pos);
+                match pos {
+                    SeekFrom::End(offset) if self.end.is_none() => {
+                            self.end = offset.checked_neg()
+                                .and_then(|offset| add_end_offset(new_pos, offset));
+                    },
+                    _ => (),
+                }
+                Ok(new_pos)
+            },
+        }
+    }
+}
+
+// compat
+pub trait ReadSeek: Read + Seek {}
+impl<T: Read + Seek> ReadSeek for T {}
+
+#[derive(Debug)]
+pub struct ErrorWrapper(acid_io::Error);
+impl fatfs::IoError for ErrorWrapper {
+    fn is_interrupted(&self) -> bool {
+        self.0.kind() == ErrorKind::Interrupted
+    }
+    fn new_unexpected_eof_error() -> Self {
+        ErrorWrapper(acid_io::Error::new(acid_io::ErrorKind::UnexpectedEof, "failed to fill whole buffer"))
+    }
+
+    fn new_write_zero_error() -> Self {
+        ErrorWrapper(acid_io::Error::new(acid_io::ErrorKind::WriteZero, "failed to write whole buffer"))
+    }
+}
+
+pub struct IgnoreWriteWrapper<T>(T);
+impl<T> IgnoreWriteWrapper<T> {
+    pub fn new(inner: T) -> Self {
+        Self(inner)
+    }
+}
+impl<T: Read> fatfs::Read for IgnoreWriteWrapper<T> {
+    fn read(&mut self, buf: &mut [u8]) -> core::result::Result<usize, ErrorWrapper> {
+        self.0.read(buf).map_err(ErrorWrapper)
+    }
+}
+impl<T: Seek> fatfs::Seek for IgnoreWriteWrapper<T> {
+    fn seek(&mut self, pos: fatfs::SeekFrom) -> core::result::Result<u64, ErrorWrapper> {
+        let pos = match pos {
+            fatfs::SeekFrom::Start(pos) => SeekFrom::Start(pos),
+            fatfs::SeekFrom::Current(pos) => SeekFrom::Current(pos),
+            fatfs::SeekFrom::End(pos) => SeekFrom::End(pos),
+        };
+        self.0.seek(pos).map_err(ErrorWrapper)
+    }
+}
+impl<T> fatfs::IoBase for IgnoreWriteWrapper<T> { type Error = ErrorWrapper; }
+impl<T> fatfs::Write for IgnoreWriteWrapper<T> {
+    fn write(&mut self, buf: &[u8]) -> core::result::Result<usize, ErrorWrapper> {
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> core::result::Result<(), ErrorWrapper> {
+        Ok(())
+    }
+}
+
