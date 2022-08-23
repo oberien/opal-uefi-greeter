@@ -1,7 +1,7 @@
 use alloc::{alloc::alloc, boxed::Box};
 use alloc::vec::Vec;
 use core::{alloc::Layout, mem::MaybeUninit, time::Duration};
-use uefi::{CStr16, Handle};
+use uefi::{CStr16, Handle, Status};
 use uefi::proto::media::file::{File, FileAttribute, FileInfo, FileMode, FileType};
 use uefi::proto::media::fs::SimpleFileSystem;
 use uefi::table::{Boot, SystemTable};
@@ -9,16 +9,25 @@ use uefi::table::boot::{EventType, TimerTrigger, Tpl};
 use crate::{Error, info, Result, ResultFixupExt};
 
 pub fn sleep(duration: Duration) {
+    // duration.as_nanos() works with u128 which is unsupported on some devices lol
+    // let nanos = (duration.as_nanos() / 100) as u64;
+    let nanos = duration.as_secs() * 1_000_000_000 + duration.subsec_nanos() as u64;
+
     // untie the sleep function from the system table
     // so that it can be used in the opal lib
     let bt = unsafe { uefi_services::system_table().as_ref() }.boot_services();
 
-    let event = unsafe { bt.create_event(EventType::TIMER, Tpl::APPLICATION, None, None).unwrap() };
-    // duration.as_nanos() works with u128 which is unsupported on some devices lol
-    // let nanos = (duration.as_nanos() / 100) as u64;
-    let nanos = duration.as_secs() * 1_000_000_000 + duration.subsec_nanos() as u64;
-    let nanos = nanos / 100;
-    bt.set_timer(&event, TimerTrigger::Periodic(nanos as u64)).unwrap();
+    let res = unsafe { bt.create_event(EventType::TIMER, Tpl::APPLICATION, None, None) };
+    let event = match res {
+        Ok(event) => event,
+        Err(err) if err.status() == Status::INVALID_PARAMETER => {
+            log::error!("Mainboard doesn't support Timer-Event -> falling back to stall");
+            bt.stall((nanos / 1000) as usize);
+            return;
+        }
+        Err(e) => Err(e).unwrap(),
+    };
+    bt.set_timer(&event, TimerTrigger::Periodic(nanos / 100)).unwrap();
 
     bt.wait_for_event(&mut [event]).unwrap();
 }

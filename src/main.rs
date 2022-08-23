@@ -356,7 +356,12 @@ fn find_read_file(st: &mut SystemTable<Boot>, config: &Config, mut partitions: &
         // probe partitions and stuff
         // recreate blockio for borrow-checker
         let blockio = st.boot_services().handle_protocol::<BlockIO>(blockio_handle).fix(info!())?;
-        let reader = BlockIoReader::new(unsafe { &* blockio.get() }, start_lba, end_lba);
+        let blockio = unsafe { &* blockio.get() };
+        if start_lba == 0 && end_lba == 0xffffffff && blockio.media().block_size() == 65535 {
+            log::error!("Spurious blockio #{i} reports having 256 TiB of space, skipping");
+            continue;
+        }
+        let reader = BlockIoReader::new(blockio, start_lba, end_lba);
         let mut reader = OptimizedSeek::new(reader);
         match find_read_file_internal(st, &mut reader, config, partitions, file) {
             Ok(file) => return Ok(file),

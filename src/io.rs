@@ -46,7 +46,7 @@ impl<'a> Read for BlockIoReader<'a> {
             dst = &mut dst[..left];
         }
 
-        assert!(self.block_size <= 4096);
+        assert!(self.block_size <= 4096, "block_size <= 4096; reported block_size: {}", self.block_size);
         let block_size = self.block_size as usize;
         let mut block = [0u8; 4096];
         let block = &mut block[..block_size];
