@@ -310,10 +310,10 @@ fn try_get_nvme_device(st: &mut SystemTable<Boot>, blockio_handle: Handle) -> Re
 }
 
 /// returns if it was already unlocked
-fn unlock_opal(st: &mut SystemTable<Boot>, blockio_handle: Handle, nvme: NvmeDevice, config: &Config, keyslot: &Keyslot) -> Result<bool> {
+fn unlock_opal(st: &mut SystemTable<Boot>, blockio_handle: Handle, nvme: NvmeDevice, config: &Config, keyslot: &Keyslot) -> Result<()> {
     let mut secure_device = SecureDevice::new(blockio_handle, nvme).fix(info!())?;
     if !secure_device.recv_locked().fix(info!())? {
-        return Ok(true);
+        return Ok(());
     }
     let mut cached = Cache::Cached;
     loop {
@@ -329,7 +329,7 @@ fn unlock_opal(st: &mut SystemTable<Boot>, blockio_handle: Handle, nvme: NvmeDev
         }
         cached = Cache::Discard;
     }
-    Ok(false)
+    Ok(())
 }
 
 fn find_read_file(st: &mut SystemTable<Boot>, config: &Config, mut partitions: &[&Partition], file: &str) -> Result<Vec<u8>> {
@@ -341,13 +341,12 @@ fn find_read_file(st: &mut SystemTable<Boot>, config: &Config, mut partitions: &
             let serial = core::str::from_utf8(nvme.serial_num())?.trim();
             log::debug!("found nvme with serial: `{}`", serial);
 
-            // decrypt
-            if partitions[0].uuid == serial && partitions[0].keyslot.is_some() {
-                let keyslot = partitions[0].keyslot.as_deref().unwrap();
-                let keyslot = &config.keyslots[keyslot];
-                // if we just unlocked the opal drive, we need to get its new handle
-                if !unlock_opal(st, blockio_handle, nvme, config, keyslot)? {
-                    return find_read_file(st, config, partitions, file);
+            if partitions[0].uuid == serial {
+                // decrypt
+                if partitions[0].keyslot.is_some() {
+                    let keyslot = partitions[0].keyslot.as_deref().unwrap();
+                    let keyslot = &config.keyslots[keyslot];
+                    unlock_opal(st, blockio_handle, nvme, config, keyslot)?;
                 }
                 partitions = &partitions[1..];
             }
@@ -361,7 +360,8 @@ fn find_read_file(st: &mut SystemTable<Boot>, config: &Config, mut partitions: &
             log::error!("Spurious blockio #{i} reports having 256 TiB of space, skipping");
             continue;
         }
-        let reader = BlockIoReader::new(blockio, start_lba, end_lba);
+        // ignore start_lba and always read from 0
+        let reader = BlockIoReader::new(blockio, 0, end_lba);
         let mut reader = OptimizedSeek::new(reader);
         match find_read_file_internal(st, &mut reader, config, partitions, file) {
             Ok(file) => return Ok(file),
