@@ -845,7 +845,7 @@ checksum = "712e227841d057c1ee1cd2fb22fa7e5a5461ae8e48fa2ca79ec42cfc1931183f"
 [[package]]
 name = "xts-mode"
 version = "0.5.0"
-source = "git+https://github.com/oberien/xts-mode#a2e3014b808896e6577ec8a3c04cad6423a0de86"
+source = "git+https://github.com/oberien/xts-mode#a78dd0cd3f39754dcb7ffcec263b56180123ac92"
 dependencies = [
  "byteorder",
  "cipher",
