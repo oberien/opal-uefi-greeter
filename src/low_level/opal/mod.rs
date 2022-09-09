@@ -303,6 +303,12 @@ impl Token for LockingState {
     }
 }
 
+#[derive(Debug, Copy, Clone)]
+pub enum OpalError {
+    Status(StatusCode),
+    NoMethodStatus,
+}
+
 newtype_enum! {
     #[must_use]
     pub enum StatusCode: u8 => {

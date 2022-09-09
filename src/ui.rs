@@ -6,7 +6,7 @@ use uefi::proto::console::text::{Key, ScanCode};
 use uefi::table::{Boot, SystemTable};
 use uefi::{CStr16, Status};
 use uefi::table::runtime::ResetType;
-use crate::{info, Result, ResultFixupExt, util};
+use crate::{Result, Context, util};
 
 /// options is a Vec<(selectable, String)>; returns the chosen index within the options-vec
 pub fn choose(st: &mut SystemTable<Boot>, options: &Vec<(bool, String)>) -> Result<usize> {
@@ -47,10 +47,12 @@ pub fn choose(st: &mut SystemTable<Boot>, options: &Vec<(bool, String)>) -> Resu
     loop {
         // reset old `>`
         let row = st.stdout().cursor_position().1;
-        st.stdout().set_cursor_position(0, row).fix(info!())?;
+        st.stdout().set_cursor_position(0, row)
+            .context("can't set cursor position to overwrite old `>`")?;
         st.stdout().write_char(' ').unwrap();
         // write `>`
-        st.stdout().set_cursor_position(0, next_row - options.len() + chosen).fix(info!())?;
+        st.stdout().set_cursor_position(0, next_row - options.len() + chosen)
+            .context("can't set cursor position to write `>`")?;
         st.stdout().write_char('>').unwrap();
 
         loop {
@@ -66,7 +68,7 @@ pub fn choose(st: &mut SystemTable<Boot>, options: &Vec<(bool, String)>) -> Resu
                 // enter
                 Key::Printable(k) if [0xD, 0xA].contains(&u16::from(k)) => {
                     // reset cursor position
-                    st.stdout().set_cursor_position(0, next_row).fix(info!())?;
+                    st.stdout().set_cursor_position(0, next_row).context("can't reset cursor position")?;
                     return Ok(chosen)
                 },
                 _ => (),
@@ -87,7 +89,7 @@ fn consume_old_keypresses(st: &mut SystemTable<Boot>) -> Result<()> {
     // yield to let UEFI queue all stale key events
     util::sleep(Duration::from_millis(10));
     loop {
-        match st.stdin().read_key().fix(info!())? {
+        match st.stdin().read_key().context("can't read key to consume old stale events")? {
             Some(key) => log::trace!("consumed stale key: {key:?}"),
             None => break,
         }
@@ -101,8 +103,8 @@ pub fn key(st: &mut SystemTable<Boot>) -> Result<Key> {
     loop {
         st.boot_services()
             .wait_for_event(&mut wait_for_key)
-            .fix(info!())?;
-        if let Some(key) = st.stdin().read_key().fix(info!())? {
+            .context("error waiting for key event")?;
+        if let Some(key) = st.stdin().read_key().context("error reading key")? {
             return Ok(key)
         }
     }
@@ -143,6 +145,6 @@ fn write_char(st: &mut SystemTable<Boot>, ch: u16) -> Result {
     let str = &[ch, 0];
     st.stdout()
         .output_string(unsafe { CStr16::from_u16_with_nul_unchecked(str) })
-        .fix(info!())
+        .context("")
 }
 

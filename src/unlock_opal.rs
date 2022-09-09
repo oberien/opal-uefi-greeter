@@ -3,7 +3,7 @@ use core::time::Duration;
 use uefi::Status;
 use uefi::table::{Boot, SystemTable};
 use uefi::table::runtime::ResetType;
-use crate::{Error, info, OpalError, OpalSession, SecureDevice, sleep, StatusCode, uid, Result, LockingState, ResultFixupExt};
+use crate::{Context, OpalSession, SecureDevice, sleep, uid, Result, LockingState, Error, ErrorSource, OpalError, StatusCode};
 
 pub enum PasswordOrRaw<'a> {
     Password(&'a [u8]),
@@ -42,7 +42,8 @@ pub fn try_unlock_device(st: &mut SystemTable<Boot>, device: &mut SecureDevice, 
 
     // reconnect the controller to see
     // the real partition pop up after unlocking
-    device.reconnect_controller(st).fix(info!())?;
+    device.reconnect_controller(st)
+        .context("can't reconnect NVMe controller after unlocking OPAL")?;
     sleep(Duration::from_millis(100));
     Ok(Ok(()))
 }
@@ -59,8 +60,8 @@ fn pretty_session<'d>(
         Some(challenge),
     ) {
         Ok(session) => Ok(Some(session)),
-        Err(Error::Opal(OpalError::Status(StatusCode::NOT_AUTHORIZED))) => Ok(None),
-        Err(Error::Opal(OpalError::Status(StatusCode::AUTHORITY_LOCKED_OUT))) => {
+        Err(Error { source: Some(ErrorSource::Opal(OpalError::Status(StatusCode::NOT_AUTHORIZED))), .. }) => Ok(None),
+        Err(Error { source: Some(ErrorSource::Opal(OpalError::Status(StatusCode::AUTHORITY_LOCKED_OUT))), .. }) => {
             st.stdout()
                 .write_str("Too many bad tries, SED locked out, resetting in 10s..")
                 .unwrap();

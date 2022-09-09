@@ -1,71 +1,109 @@
-use crate::low_level::opal::StatusCode;
 use alloc::string::String;
 use core::fmt::{Debug, Display, Formatter};
-use core::str::Utf8Error;
-use luks2::error::LuksError;
-use uefi::Status;
+use core::panic::Location;
 use crate::io::ErrorWrapper;
 
 pub type Result<T = ()> = core::result::Result<T, Error>;
 
-#[derive(Debug, Copy, Clone)]
-pub enum OpalError {
-    Status(StatusCode),
-    NoMethodStatus,
+// pub struct UefiAcidioWrapper(pub uefi::Error, pub &'static str);
+// impl Debug for UefiAcidioWrapper {
+//     fn fmt(&self, f: &mut Formatter<'_>) -> core::fmt::Result {
+//         Debug::fmt(&self.0, f)
+//     }
+// }
+// impl Display for UefiAcidioWrapper {
+//     fn fmt(&self, f: &mut Formatter<'_>) -> core::fmt::Result {
+//         // uefi::Error doesn't have a Display impl
+//         Debug::fmt(&self.0, f)
+//     }
+// }
+impl acid_io::ErrorTrait for Error {}
+
+#[derive(Debug)]
+pub struct Error {
+    pub source: Option<ErrorSource>,
+    pub location: &'static Location<'static>,
+    pub context: String,
 }
 
-pub struct UefiAcidioWrapper(pub uefi::Error, pub &'static str);
-impl Debug for UefiAcidioWrapper {
-    fn fmt(&self, f: &mut Formatter<'_>) -> core::fmt::Result {
-        Debug::fmt(&self.0, f)
+impl Error {
+    #[track_caller]
+    pub fn new(source: impl Into<ErrorSource>, context: impl Into<String>) -> Error {
+        Error {
+            source: Some(source.into()),
+            location: Location::caller(),
+            context: context.into(),
+        }
+    }
+    #[track_caller]
+    pub fn new_from_uefi<E: Debug>(source: uefi::Error<E>, context: impl Into<String>) -> Error {
+        Error {
+            source: Some(ErrorSource::Uefi(uefi::Error::from(source.status()))),
+            location: Location::caller(),
+            context: context.into(),
+        }
+    }
+    #[track_caller]
+    pub fn new_without_source(msg: impl Into<String>) -> Error {
+        Error {
+            source: None,
+            location: Location::caller(),
+            context: msg.into(),
+        }
     }
 }
-impl Display for UefiAcidioWrapper {
+
+impl Display for Error {
     fn fmt(&self, f: &mut Formatter<'_>) -> core::fmt::Result {
-        // uefi::Error doesn't have a Display impl
-        Debug::fmt(&self.0, f)
+        f.write_str(&self.context)?;
+        if let Some(source) = &self.source {
+            f.write_str(", reason: ")?;
+            Display::fmt(source, f)?;
+        }
+        write!(f, ", at {}", self.location)?;
+        Ok(())
     }
 }
-impl acid_io::ErrorTrait for UefiAcidioWrapper {}
 
 #[derive(Debug, thiserror_no_std::Error)]
-pub enum Error {
-    Uefi(Status, &'static str),
-    Opal(#[from] OpalError),
-    IoError(#[from] acid_io::Error),
-    ConfigMissing,
-    InvalidConfig(#[from] toml::de::Error),
-    EfiImageNameNonUtf16,
-    InitrdNameNonUtf16,
-    FileNameNonUtf16,
+pub enum ErrorSource {
+    #[error("file not found")]
     FileNotFound,
-    ImageNotFound(String),
-    ImageNotPeCoff,
-    Luks(#[from] LuksError),
-    Utf8(#[from] Utf8Error),
-    Fatfs(#[from] fatfs::Error<ErrorWrapper>),
+    #[error("opal: {0:?}")]
+    Opal(#[from] crate::low_level::opal::OpalError),
+    #[error("uefi: {0:?}")]
+    Uefi(uefi::Error),
+    #[error("utf8: {0}")]
+    Utf8(#[from] core::str::Utf8Error),
+    #[error("toml: {0}")]
+    Toml(#[from] toml::de::Error),
+    #[error("cstring16fromstr: {0:?}")]
+    CString16FromStrError(#[from] uefi::data_types::FromStrError),
+    #[error("io: {0}")]
+    Io(#[from] acid_io::Error),
+    #[error("luks: {0}")]
+    Luks(#[from] luks2::error::LuksError),
+    #[error("fat: {0}")]
+    Fat(#[from] fatfs::Error<ErrorWrapper>),
 }
 
-impl From<StatusCode> for Error {
-    fn from(status: StatusCode) -> Self {
-        OpalError::Status(status).into()
+pub trait Context {
+    type Ok;
+    #[track_caller]
+    fn context(self, context: impl Into<String>) -> core::result::Result<Self::Ok, Error>;
+}
+
+impl<T, E: Into<ErrorSource>> Context for core::result::Result<T, E> {
+    type Ok = T;
+    #[track_caller]
+    fn context(self, context: impl Into<String>) -> core::result::Result<T, Error> {
+        self.map_err(|err| Error::new(err, context))
     }
 }
-
-pub trait ResultFixupExt<T>: Sized {
-    fn fix(self, name: &'static str) -> Result<T>;
-}
-
-#[macro_export]
-macro_rules! info {
-    () => {
-        concat!(file!(), ":", line!())
-    };
-}
-
-impl<T, D: Debug> ResultFixupExt<T> for uefi::Result<T, D> {
-    fn fix(self, info: &'static str) -> Result<T> {
-        self
-            .map_err(|e| Error::Uefi(e.status(), info))
+impl<T, E: Debug> Context for core::result::Result<T, uefi::Error<E>> {
+    type Ok = T;
+    #[track_caller]
+    fn context(self, context: impl Into<String>) -> core::result::Result<T, Error> {
+        self.map_err(|err| Error::new_from_uefi(err, context))
     }
 }

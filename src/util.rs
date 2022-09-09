@@ -6,7 +6,7 @@ use uefi::proto::media::file::{File, FileAttribute, FileInfo, FileMode, FileType
 use uefi::proto::media::fs::SimpleFileSystem;
 use uefi::table::{Boot, SystemTable};
 use uefi::table::boot::{EventType, TimerTrigger, Tpl};
-use crate::{Error, info, Result, ResultFixupExt};
+use crate::{Error, Result, Context};
 
 pub fn sleep(duration: Duration) {
     // duration.as_nanos() works with u128 which is unsupported on some devices lol
@@ -76,17 +76,20 @@ fn read_to_vec(
     let sfs = st
         .boot_services()
         .handle_protocol::<SimpleFileSystem>(device)
-        .fix(info!())?;
+        .context(format!("can't get SimpleFileSystem from device to get file {}", file))?;
     let sfs = unsafe { &mut *sfs.get() };
 
     let file_handle = sfs
-        .open_volume().fix(info!())?
+        .open_volume().context(format!("can't open SimpleFileSystem to get file {}", file))?
         .open(&file, FileMode::Read, FileAttribute::empty())
-        .fix(info!())?;
+        .context(format!("can't open file {}", file))?;
 
-    if let FileType::Regular(mut f) = file_handle.into_type().fix(info!())? {
+    let file_type = file_handle.into_type()
+        .context(format!("error converting file handle to file type for file {}", file))?;
+    if let FileType::Regular(mut f) = file_type {
         if full {
-            let info = f.get_boxed_info::<FileInfo>().fix(info!())?;
+            let info = f.get_boxed_info::<FileInfo>()
+                .context(format!("can't get file info for file {}", file))?;
             let size = info.file_size() as usize;
             vec.resize(size, 0);
         }
@@ -94,10 +97,10 @@ fn read_to_vec(
         let read = f
             .read(vec)
             .map_err(|_| uefi::Error::new(uefi::Status::BUFFER_TOO_SMALL, ()))
-            .fix(info!())?;
+            .context(format!("error reading from file {}", file))?;
         vec.truncate(read);
         Ok(read)
     } else {
-        Err(Error::FileNotFound)
+        Err(Error::new_without_source(format!("file {} note found", file)))
     }
 }

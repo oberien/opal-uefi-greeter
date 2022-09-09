@@ -1,8 +1,7 @@
 use core::convert::TryFrom;
+use core::fmt::{Display, Formatter};
 use acid_io::{Error, ErrorKind, Read, Seek, SeekFrom};
 #[cfg(target_os = "uefi")] use uefi::proto::media::block::BlockIO;
-#[cfg(target_os = "uefi")] use crate::error::UefiAcidioWrapper;
-#[cfg(target_os = "uefi")] use crate::info;
 
 #[cfg(target_os = "uefi")]
 pub struct BlockIoReader<'a> {
@@ -31,8 +30,9 @@ impl<'a> BlockIoReader<'a> {
     }
 
     fn read_blocks(&self, buffer: &mut [u8]) -> acid_io::Result<()> {
-        self.inner.read_blocks(self.media_id, self.start_lba + self.cursor / self.block_size, buffer)
-            .map_err(|e| acid_io::Error::new(ErrorKind::Other, UefiAcidioWrapper(e, info!())))
+        let lba = self.start_lba + self.cursor / self.block_size;
+        self.inner.read_blocks(self.media_id, lba, buffer)
+            .map_err(|e| acid_io::Error::new(ErrorKind::Other, crate::error::Error::new_from_uefi(e, format!("can't read BlockIO LBAs starting from {lba}; number of blocks: {}", buffer.len() as u64 / self.block_size))))
     }
 }
 #[cfg(target_os = "uefi")]
@@ -225,6 +225,12 @@ impl fatfs::IoError for ErrorWrapper {
 
     fn new_write_zero_error() -> Self {
         ErrorWrapper(acid_io::Error::new(acid_io::ErrorKind::WriteZero, "failed to write whole buffer"))
+    }
+}
+
+impl Display for ErrorWrapper {
+    fn fmt(&self, f: &mut Formatter<'_>) -> core::fmt::Result {
+        Display::fmt(&self.0, f)
     }
 }
 

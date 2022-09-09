@@ -1,10 +1,11 @@
 use alloc::string::String;
 use core::{fmt::Write, mem::size_of_val, time::Duration};
 
-use crate::{error::{Error, OpalError, Result}, info, low_level::opal::{
+use crate::{error::{Result, Context}, Error, ErrorSource, low_level::opal::{
+    OpalError,
     BS8,
     command::{OpalCommand, OpalCommandBuilder, OpalResponse}, LockingState, method, OpalHeader, SimpleToken, StatusCode, tiny_atom, token, uid,
-}, ResultFixupExt, token_list, token_name, tokens, util::sleep};
+}, token_list, token_name, tokens, util::sleep};
 use crate::low_level::secure_device::SecureDevice;
 
 pub struct OpalSession<'d> {
@@ -142,7 +143,7 @@ impl<'d> OpalSession<'d> {
         self.device
             .proto()
             .secure_send(self.protocol, com_id, buffer.as_mut())
-            .fix(info!())?;
+            .context("can't send raw command to NVMe device")?;
 
         let mut buffer = crate::util::alloc_uninit_aligned(2048, self.device.proto().align());
 
@@ -153,7 +154,7 @@ impl<'d> OpalSession<'d> {
             self.device
                 .proto()
                 .secure_recv(self.protocol, com_id, &mut buffer)
-                .fix(info!())?;
+                .context("can't receive response from NVMe device")?;
 
             header = core::ptr::read(buffer.as_ptr() as _);
 
@@ -184,12 +185,18 @@ impl<'d> OpalSession<'d> {
         {
             let code = StatusCode(response.get_uint(len - 4) as _);
             if code != StatusCode::SUCCESS {
-                Err(OpalError::Status(code).into())
+                Err(Error::new(
+                    OpalError::Status(code),
+                    format!("NvmExpressPassthru received non-Success status code: {code:?}"),
+                ))
             } else {
                 Ok(response)
             }
         } else {
-            Err(OpalError::NoMethodStatus.into())
+            Err(Error::new(
+                OpalError::NoMethodStatus,
+                "NvmExpressPassthru received non-conform data",
+            ))
         }
     }
 
@@ -268,7 +275,7 @@ impl<'d> Drop for OpalSession<'d> {
             .payload(tokens![token::ENDOFSESSION])
             .build_no_end_of_data();
         match unsafe { self.send_raw_command(command) } {
-            Err(Error::Opal(OpalError::NoMethodStatus)) => {} // that's expected
+            Err(Error { source: Some(ErrorSource::Opal(OpalError::NoMethodStatus)), .. }) => {} // that's expected
             Err(e) => log::error!("failed to send close session message: {:?}", e),
             _ => log::warn!("somehow got successful method status after CloseSession"),
         }

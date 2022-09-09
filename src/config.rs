@@ -5,29 +5,29 @@ use log::LevelFilter;
 use serde::{Deserialize, Deserializer};
 use either::Either;
 #[cfg(target_os = "uefi")] use uefi::prelude::cstr16;
-#[cfg(target_os = "uefi")] use crate::info;
 #[cfg(target_os = "uefi")] use uefi::{Handle, table::SystemTable, table::Boot};
 #[cfg(target_os = "uefi")] use uefi::proto::loaded_image::LoadedImage;
 #[cfg(target_os = "uefi")] use uefi::proto::device_path::DevicePath;
 #[cfg(target_os = "uefi")] use uefi::proto::media::fs::SimpleFileSystem;
-#[cfg(target_os = "uefi")] use crate::ResultFixupExt;
+#[cfg(target_os = "uefi")] use crate::error::Context;
 
 #[cfg(target_os = "uefi")]
 pub fn load(image_handle: Handle, st: &mut SystemTable<Boot>) -> crate::Result<Config> {
     let loaded_image = st
         .boot_services()
         .handle_protocol::<LoadedImage>(image_handle)
-        .fix(info!())?;
+        .context("cannot get LoadedImage")?;
     let device_path = st
         .boot_services()
         .handle_protocol::<DevicePath>(unsafe { &*loaded_image.get() }.device())
-        .fix(info!())?;
+        .context("cannot get DevicePath of LoadedImage")?;
     let device_handle = st
         .boot_services()
         .locate_device_path::<SimpleFileSystem>(unsafe { &mut &*device_path.get() })
-        .fix(info!())?;
+        .context("cannot get SimpleFileSystem from DevicePath from LoadedImage")?;
     let buf = crate::util::read_full_file(st, device_handle, cstr16!("config.toml"))?;
-    let config: Config = toml::from_slice(&buf)?;
+    let config: Config = toml::from_slice(&buf)
+        .context("error decoding config file as toml")?;
     log::set_max_level(config.log_level);
     // log::debug!("loaded config = {:#?}", config);
     Ok(config)
