@@ -112,9 +112,9 @@ fn run(image_handle: Handle, st: &mut SystemTable<Boot>, config: &Config) -> Res
     match selected {
         i if i < boot_entry_len => {
             let boot_entry = &config.boot_entries[selected];
-            handle_boot_entry(st, image_handle, &config, boot_entry)?;
+            handle_boot_entry(st, image_handle, config, boot_entry)?;
         },
-        i if i == boot_entry_len => handle_unlock_configured_opal_drives(st, &config)?,
+        i if i == boot_entry_len => handle_unlock_configured_opal_drives(st, config)?,
         i => unreachable!("unknown boot entry selection {}", i),
     }
 
@@ -181,13 +181,13 @@ fn handle_unlock_configured_opal_drives(st: &mut SystemTable<Boot>, config: &Con
 fn handle_boot_entry(st: &mut SystemTable<Boot>, image_handle: Handle, config: &Config, boot_entry: &BootEntry) -> Result<()> {
     let BootEntry { name, file: efi_file, initrd, additional_initrd_files, options, default } = boot_entry;
 
-    let efi_image = resolve_and_read_file(st, &config, efi_file)?;
+    let efi_image = resolve_and_read_file(st, config, efi_file)?;
     if efi_image.get(0..2) != Some(&[0x4d, 0x5a]) {
         return Err(Error::new_without_source("image is not a valid PeCoff"));
     }
 
     let initramfs_addr = if initrd.is_some() || additional_initrd_files.is_some() {
-        Some(construct_initramfs(st, &config, initrd, additional_initrd_files)?)
+        Some(construct_initramfs(st, config, initrd, additional_initrd_files)?)
     } else {
         None
     };
@@ -236,14 +236,14 @@ fn construct_initramfs(st: &mut SystemTable<Boot>, config: &Config, initrd: &Opt
 
     for initrd in initrd.iter().flat_map(|initrd| initrd.iter()) {
         log::debug!("loading initrd file {}", initrd.file);
-        let content = resolve_and_read_file(st, &config, initrd)?;
+        let content = resolve_and_read_file(st, config, initrd)?;
         initramfs.add_raw_archive(content);
     }
 
     let mut additional_files = Archive::new();
     for AdditionalInitrdFile { source, target_file } in additional_initrd_files.iter().flatten() {
         log::debug!("loading additional initrd file {}", source.file);
-        let content = resolve_and_read_file(st, &config, source)?;
+        let content = resolve_and_read_file(st, config, source)?;
         additional_files.add_file(initramfs::File::new(target_file.clone(), content));
     }
     initramfs.add_archive(additional_files);
@@ -258,7 +258,7 @@ fn construct_initramfs(st: &mut SystemTable<Boot>, config: &Config, initrd: &Opt
         .allocate_pages(AllocateType::AnyPages, MemoryType::RUNTIME_SERVICES_DATA, num_pages)
         .context("can't align memory for initramfs")?;
     let buffer = unsafe { slice::from_raw_parts_mut(initramfs_addr as *mut u8, num_pages * 4096) };
-    (&mut buffer[..serialized.len()]).copy_from_slice(&serialized);
+    buffer[..serialized.len()].copy_from_slice(&serialized);
     log::debug!("initramfs loaded");
     Ok((initramfs_addr, serialized.len()))
 }
@@ -311,7 +311,7 @@ fn try_get_nvme_device(st: &mut SystemTable<Boot>, blockio_handle: Handle) -> Re
                 .boot_services()
                 .handle_protocol::<NvmExpressPassthru>(nvme)
                 .context("error creating NvmExpressPassthru handle")?;
-            let nvme = NvmeDevice::new(nvme.get())
+            let nvme = unsafe { NvmeDevice::new(nvme.get()) }
                 .context("error creating NvmeDevice from NvmExpressPassthru-Handle")?;
             Ok(Some(nvme))
         },
@@ -432,7 +432,7 @@ fn find_read_file_internal(st: &mut SystemTable<Boot>, reader: &mut dyn ReadSeek
                 None => {
                     let mut cached = Cache::Cached;
                     let luks = loop {
-                        let password = get_password_of_keyslot(st, config, &keyslot, cached)?;
+                        let password = get_password_of_keyslot(st, config, keyslot, cached)?;
                         match LuksDevice::from_device(&mut *reader, &password, 512) {
                             Ok(luks) => break luks,
                             Err(LuksError::InvalidPassword) => log::error!("Invalid Password, try again!"),
@@ -571,7 +571,7 @@ fn config_stdout(st: &mut SystemTable<Boot>) -> uefi::Result {
         st.stdout().set_mode(mode)?;
     };
 
-    Ok(().into())
+    Ok(())
 }
 
 fn find_boot_partitions(st: &mut SystemTable<Boot>) -> Result<Vec<(GptPartitionEntry, Handle)>> {
@@ -587,7 +587,7 @@ fn find_boot_partitions(st: &mut SystemTable<Boot>) -> Result<Vec<(GptPartitionE
 
         match pi.gpt_partition_entry() {
             Some(gpt) if { gpt.partition_type_guid } == GptPartitionType::EFI_SYSTEM_PARTITION => {
-                res.push((gpt.clone(), handle));
+                res.push((*gpt, handle));
             }
             _ => {}
         }

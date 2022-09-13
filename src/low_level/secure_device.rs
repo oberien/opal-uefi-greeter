@@ -83,8 +83,7 @@ impl SecureDevice {
             handle,
             com_id,
             is_eprise,
-        }
-        .into())
+        })
     }
 
     pub fn reconnect_controller(&self, st: &mut SystemTable<Boot>) -> uefi::Result {
@@ -92,7 +91,7 @@ impl SecureDevice {
             .disconnect_controller(self.handle, None, None)?;
         st.boot_services()
             .connect_controller(self.handle, None, None, true)?;
-        Ok(().into())
+        Ok(())
     }
 
     pub fn com_id(&self) -> u16 {
@@ -112,8 +111,7 @@ impl SecureDevice {
             .locking
             .map_or(false, |locking| {
                 locking.contains(LockingFlags::LOCKED)
-            })
-            .into())
+            }))
     }
 }
 
@@ -168,5 +166,5 @@ fn recv_info(proto: &mut dyn SecureProtocol) -> uefi::Result<SecureDeviceInfo> {
         offset += len + 4;
     }
 
-    Ok(device_info.into())
+    Ok(device_info)
 }

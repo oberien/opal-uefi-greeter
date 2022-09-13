@@ -31,7 +31,7 @@ pub fn try_unlock_device(st: &mut SystemTable<Boot>, device: &mut SecureDevice, 
     }
 
     {
-        let session = pretty_session(st, device, &*hash)?;
+        let session = pretty_session(st, device, &hash)?;
         if let Some(mut s) = session {
             s.set_mbr_done(true)?;
             s.set_locking_range(0, LockingState::ReadWrite)?;

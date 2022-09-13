@@ -81,7 +81,7 @@ fn read_to_vec(
 
     let file_handle = sfs
         .open_volume().context(format!("can't open SimpleFileSystem to get file {}", file))?
-        .open(&file, FileMode::Read, FileAttribute::empty())
+        .open(file, FileMode::Read, FileAttribute::empty())
         .context(format!("can't open file {}", file))?;
 
     let file_type = file_handle.into_type()

@@ -34,7 +34,7 @@ pub fn choose(st: &mut SystemTable<Boot>, options: &Vec<(bool, String)>) -> Resu
     assert!(!options.is_empty());
     let mut chosen = match options[0].0 {
         true => 0,
-        false => next_selectable(0, &options, false),
+        false => next_selectable(0, options, false),
     };
     // initialize menu output; only update the `>` later on
     let output: String = options.iter()
@@ -58,11 +58,11 @@ pub fn choose(st: &mut SystemTable<Boot>, options: &Vec<(bool, String)>) -> Resu
         loop {
             match key(st)? {
                 Key::Special(ScanCode::DOWN) => {
-                    chosen = next_selectable(chosen, &options, false);
+                    chosen = next_selectable(chosen, options, false);
                     break;
                 },
                 Key::Special(ScanCode::UP) => {
-                    chosen = next_selectable(chosen, &options, true);
+                    chosen = next_selectable(chosen, options, true);
                     break;
                 },
                 // enter
