@@ -9,15 +9,13 @@ license = 'MIT'
 rlibc = '1.0'
 
 wchar = '0.11'
-uefi = { version = "0.16", features = ["exts", "logger"] }
-uefi-services = '0.13'
+uefi = { version = "0.24", features = ["logger", "alloc"] }
+uefi-services = '0.21'
 
 bitflags = '1.2'
 seq-macro = '0.2'
 
-pbkdf2 = { version = "0.9.0", default-features = false }
-sha-1 = { version = "0.9", default-features = false, features = ['force-soft'] }
-hmac = { version = "0.11", default-features = false }
+sha1 = { version = "0.10.5", default-features = false, features = ['force-soft'] }
 
 log = { version = '0.4', default-features = false, features = ["serde"] }
 serde = { version = "1.0.140", default-features = false, features = ["derive", "alloc"] }
@@ -35,6 +33,9 @@ uuid = { version = "1.1.2", default-features = false }
 either = { version = "1.7.0", default-features = false }
 fatfs = { git = "https://github.com/rafalh/rust-fatfs", default-features = false, features = ["lfn", "alloc"] }
 io-compat = { git = "https://github.com/main--/rust-io-compat", default-features = false, features = ["alloc", "acid_io", "fatfs"] }
+uefi-raw = "0.3.0"
+opal = { version = "0.1.0", path = "opal" }
+snafu = { version = "0.7.5", default-features = false, features = ["rust_1_61"] }
 
 [patch.crates-io]
 acid_io = { git = "https://github.com/oberien/acid_io" }

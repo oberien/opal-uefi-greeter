@@ -12,18 +12,18 @@ use either::Either;
 #[cfg(target_os = "uefi")] use crate::error::Context;
 
 #[cfg(target_os = "uefi")]
-pub fn load(image_handle: Handle, st: &mut SystemTable<Boot>) -> crate::Result<Config> {
+pub fn load(image_handle: Handle, st: &SystemTable<Boot>) -> crate::Result<Config> {
     let loaded_image = st
         .boot_services()
-        .handle_protocol::<LoadedImage>(image_handle)
+        .open_protocol_exclusive::<LoadedImage>(image_handle)
         .context("cannot get LoadedImage")?;
     let device_path = st
         .boot_services()
-        .handle_protocol::<DevicePath>(unsafe { &*loaded_image.get() }.device())
+        .open_protocol_exclusive::<DevicePath>(loaded_image.device())
         .context("cannot get DevicePath of LoadedImage")?;
     let device_handle = st
         .boot_services()
-        .locate_device_path::<SimpleFileSystem>(unsafe { &mut &*device_path.get() })
+        .locate_device_path::<SimpleFileSystem>(&mut &*device_path)
         .context("cannot get SimpleFileSystem from DevicePath from LoadedImage")?;
     let buf = crate::util::read_full_file(st, device_handle, cstr16!("config.toml"))?;
     let config: Config = toml::from_slice(&buf)

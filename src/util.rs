@@ -32,13 +32,25 @@ pub fn sleep(duration: Duration) {
     bt.wait_for_event(&mut [event]).unwrap();
 }
 
+pub unsafe fn alloc_init_aligned(len: usize, align: usize) -> Box<[u8]> {
+    let ptr = alloc(Layout::from_size_align(len, align).unwrap()) as _;
+    core::ptr::write_bytes(ptr, 0, len);
+    Box::from_raw(core::slice::from_raw_parts_mut(ptr, len))
+}
+
+pub unsafe fn alloc_aligned_t<T>(t: T, align: usize) -> Box<T> {
+    let ptr = alloc(Layout::from_size_align(core::mem::size_of::<T>(), align).unwrap()) as _;
+    core::ptr::write(ptr, t);
+    Box::from_raw(ptr)
+}
+
 pub unsafe fn alloc_uninit_aligned(len: usize, align: usize) -> Box<[MaybeUninit<u8>]> {
     let ptr = alloc(Layout::from_size_align(len, align).unwrap()) as _;
     Box::from_raw(core::slice::from_raw_parts_mut(ptr, len))
 }
 
 pub fn read_full_file(
-    st: &mut SystemTable<Boot>,
+    st: &SystemTable<Boot>,
     device: Handle,
     file: &CStr16,
 ) -> Result<Vec<u8>> {
@@ -48,7 +60,7 @@ pub fn read_full_file(
 }
 /// resizes the vector to fit the whole file
 pub fn read_full_file_to_vec(
-    st: &mut SystemTable<Boot>,
+    st: &SystemTable<Boot>,
     device: Handle,
     file: &CStr16,
     vec: &mut Vec<u8>,
@@ -58,7 +70,7 @@ pub fn read_full_file_to_vec(
 
 /// reads into the existing vector-length; does not resize the vector
 pub fn read_partial_file_to_vec(
-    st: &mut SystemTable<Boot>,
+    st: &SystemTable<Boot>,
     device: Handle,
     file: &CStr16,
     vec: &mut Vec<u8>,
@@ -67,17 +79,16 @@ pub fn read_partial_file_to_vec(
 }
 
 fn read_to_vec(
-    st: &mut SystemTable<Boot>,
+    st: &SystemTable<Boot>,
     device: Handle,
     file: &CStr16,
     vec: &mut Vec<u8>,
     full: bool,
 ) -> Result<usize> {
-    let sfs = st
+    let mut sfs = st
         .boot_services()
-        .handle_protocol::<SimpleFileSystem>(device)
+        .open_protocol_exclusive::<SimpleFileSystem>(device)
         .context(format!("can't get SimpleFileSystem from device to get file {}", file))?;
-    let sfs = unsafe { &mut *sfs.get() };
 
     let file_handle = sfs
         .open_volume().context(format!("can't open SimpleFileSystem to get file {}", file))?

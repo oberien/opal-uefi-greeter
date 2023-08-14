@@ -1,27 +1,28 @@
+use alloc::format;
 use alloc::string::String;
-use core::{fmt::Write, mem::size_of_val, time::Duration};
+use alloc::borrow::ToOwned;
+use core::{fmt::Write, mem::size_of_val};
+use snafu::ResultExt;
 
-use crate::{error::{Result, Context}, Error, ErrorSource, low_level::opal::{
-    OpalError,
-    BS8,
-    command::{OpalCommand, OpalCommandBuilder, OpalResponse}, LockingState, method, OpalHeader, SimpleToken, StatusCode, tiny_atom, token, uid,
-}, token_list, token_name, tokens, util::sleep};
-use crate::low_level::secure_device::SecureDevice;
+use crate::{tokens, token_list, token_name};
+use crate::defs::*;
+use crate::command::*;
+use crate::io::{SecureProtocol, SecureDevice};
 
-pub struct OpalSession<'d> {
-    device: &'d mut SecureDevice,
+pub struct OpalSession<'d, P: SecureProtocol> {
+    device: &'d mut SecureDevice<P>,
     tsn: u32,
     hsn: u32,
     protocol: u8,
 }
 
-impl<'d> OpalSession<'d> {
+impl<'d, P: SecureProtocol> OpalSession<'d, P> {
     pub fn start(
-        device: &'d mut SecureDevice,
+        device: &'d mut SecureDevice<P>,
         sp_uid: BS8,
         sign_authority: BS8,
         challenge: Option<&[u8]>,
-    ) -> Result<Self> {
+    ) -> crate::Result<Self, P::Error> {
         let mut s = Self {
             device,
             tsn: 0,
@@ -112,7 +113,7 @@ impl<'d> OpalSession<'d> {
         self
     }
 
-    pub unsafe fn send_raw_command(&mut self, mut command: OpalCommand) -> Result<OpalResponse> {
+    pub unsafe fn send_raw_command(&mut self, mut command: OpalCommand) -> crate::Result<OpalResponse, P::Error> {
         command.set_session(self.device.com_id(), self.tsn, self.hsn);
 
         let eod = command.eod;
@@ -120,7 +121,7 @@ impl<'d> OpalSession<'d> {
         let mut header = command.header;
 
         let offset = size_of_val(&header);
-        let mut buffer = crate::util::alloc_uninit_aligned(
+        let mut buffer = crate::util::alloc_aligned(
             command.payload.len() + offset,
             self.device.proto().align(),
         );
@@ -132,10 +133,8 @@ impl<'d> OpalSession<'d> {
         core::ptr::write(buffer.as_mut_ptr() as _, header);
 
         for (i, &b) in command.payload.iter().enumerate() {
-            buffer[offset + i].write(b);
+            buffer[offset + i] = b;
         }
-
-        let mut buffer = buffer.assume_init();
 
         dump("sending", &buffer);
 
@@ -143,18 +142,18 @@ impl<'d> OpalSession<'d> {
         self.device
             .proto()
             .secure_send(self.protocol, com_id, buffer.as_mut())
-            .context("can't send raw command to NVMe device")?;
+            .context(super::IoSnafu)?;
 
-        let mut buffer = crate::util::alloc_uninit_aligned(2048, self.device.proto().align());
+        let mut buffer = crate::util::alloc_aligned(2048, self.device.proto().align());
 
         let mut header: OpalHeader;
         loop {
-            sleep(Duration::from_millis(25));
+            //sleep(Duration::from_millis(25));
 
             self.device
                 .proto()
                 .secure_recv(self.protocol, com_id, &mut buffer)
-                .context("can't receive response from NVMe device")?;
+                .context(super::IoSnafu)?;
 
             header = core::ptr::read(buffer.as_ptr() as _);
 
@@ -166,8 +165,6 @@ impl<'d> OpalSession<'d> {
         header.cp.length = u32::from_be(header.cp.length);
         header.pkt.length = u32::from_be(header.pkt.length);
         header.subpkt.length = u32::from_be(header.subpkt.length);
-
-        let buffer = buffer.assume_init();
 
         dump(
             "received",
@@ -185,18 +182,18 @@ impl<'d> OpalSession<'d> {
         {
             let code = StatusCode(response.get_uint(len - 4) as _);
             if code != StatusCode::SUCCESS {
-                Err(Error::new(
-                    OpalError::Status(code),
-                    format!("NvmExpressPassthru received non-Success status code: {code:?}"),
-                ))
+                Err(super::Error::Opal {
+                    source: OpalError::Status { code },
+                    msg: format!("NvmExpressPassthru received non-Success status code: {code:?}"),
+                })
             } else {
                 Ok(response)
             }
         } else {
-            Err(Error::new(
-                OpalError::NoMethodStatus,
-                "NvmExpressPassthru received non-conform data",
-            ))
+            Err(super::Error::Opal {
+                source: OpalError::NoMethodStatus,
+                msg: "NvmExpressPassthru received non-conform data".to_owned(),
+            })
         }
     }
 
@@ -206,7 +203,7 @@ impl<'d> OpalSession<'d> {
         table: BS8,
         name: SimpleToken,
         value: SimpleToken,
-    ) -> Result {
+    ) -> crate::Result<(), P::Error> {
         self.send_raw_command(
             OpalCommandBuilder::new(table, method::SET)
                 .payload(token_list![token_name!(
@@ -218,11 +215,11 @@ impl<'d> OpalSession<'d> {
         Ok(())
     }
 
-    pub fn set_mbr_done(&mut self, done: bool) -> Result {
+    pub fn set_mbr_done(&mut self, done: bool) -> crate::Result<(), P::Error> {
         unsafe { self.set_locking_sp_value(uid::OPAL_MBRCONTROL, token::MBRDONE, done.into()) }
     }
 
-    pub fn set_locking_range(&mut self, locking_range: u8, locking_state: LockingState) -> Result {
+    pub fn set_locking_range(&mut self, locking_range: u8, locking_state: LockingState) -> crate::Result<(), P::Error> {
         let mut archive_user = false;
         let mut read_lock = token::OPAL_FALSE;
         let mut write_lock = token::OPAL_FALSE;
@@ -269,15 +266,15 @@ impl<'d> OpalSession<'d> {
     }
 }
 
-impl<'d> Drop for OpalSession<'d> {
+impl<'d, P: SecureProtocol> Drop for OpalSession<'d, P> {
     fn drop(&mut self) {
         let command = OpalCommandBuilder::empty()
             .payload(tokens![token::ENDOFSESSION])
             .build_no_end_of_data();
         match unsafe { self.send_raw_command(command) } {
-            Err(Error { source: Some(ErrorSource::Opal(OpalError::NoMethodStatus)), .. }) => {} // that's expected
-            Err(e) => log::error!("failed to send close session message: {:?}", e),
-            _ => log::warn!("somehow got successful method status after CloseSession"),
+            Err(super::Error::Opal { source: OpalError::NoMethodStatus, .. }) => {} // that's expected
+            Err(e) => tracing::error!("failed to send close session message: {:?}", e),
+            _ => tracing::warn!("somehow got successful method status after CloseSession"),
         }
     }
 }
@@ -290,5 +287,5 @@ fn dump(title: &str, buffer: impl AsRef<[u8]>) {
         }
         write!(&mut dump, "{:02X}", b).unwrap();
     }
-    log::trace!("{}:{}", title, dump);
+    tracing::trace!("{}:{}", title, dump);
 }

@@ -70,7 +70,7 @@ pub enum ErrorSource {
     #[error("file not found")]
     FileNotFound,
     #[error("opal: {0:?}")]
-    Opal(#[from] crate::low_level::opal::OpalError),
+    Opal(#[from] opal::Error<crate::low_level::nvme_device::UefiError>),
     #[error("uefi: {0:?}")]
     Uefi(uefi::Error),
     #[error("utf8: {0}")]

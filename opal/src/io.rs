@@ -1,24 +1,24 @@
-use alloc::boxed::Box;
-use bitflags::bitflags;
-use core::mem::MaybeUninit;
-use uefi::{
-    newtype_enum,
-    table::{Boot, SystemTable},
-    Handle, Status,
-};
+use alloc::fmt::{Debug, Display};
+
+use snafu::{ResultExt, AsErrorSource};
+use uefi_raw::newtype_enum;
 
 pub trait SecureProtocol {
+    type Error: Debug + Display + AsErrorSource;
+
     /// # Safety
     /// This method allows to send arbitrary secure protocol commands to the underlying device.
     /// Very unsafe and might even brick a device if used incorrectly.
-    unsafe fn secure_send(&mut self, protocol: u8, com_id: u16, data: &mut [u8]) -> uefi::Result;
+    unsafe fn secure_send(&mut self, protocol: u8, com_id: u16, data: &mut [u8]) -> Result<(), Self::Error>;
 
     unsafe fn secure_recv(
         &mut self,
         protocol: u8,
         com_id: u16,
-        buffer: &mut [MaybeUninit<u8>],
-    ) -> uefi::Result;
+        buffer: &mut [u8],
+    ) -> Result<(), Self::Error>;
+
+    fn reconnect_controller(&mut self) -> Result<(), Self::Error>;
 
     fn align(&self) -> usize;
 
@@ -38,7 +38,8 @@ newtype_enum! {
     }
 }
 
-bitflags! {
+bitflags::bitflags! {
+    #[derive(Debug)]
     pub struct LockingFlags: u8 {
         const LOCKING_SUPPORTED = 0x01;
         const LOCKING_ENABLED   = 0x02;
@@ -62,35 +63,38 @@ pub struct ComIdInfo {
     pub num_com_ids: u16,
 }
 
-pub struct SecureDevice {
-    device: Box<dyn SecureProtocol>,
-    handle: Handle,
+pub struct SecureDevice<P> {
+    device: P,
     com_id: u16,
     is_eprise: bool,
+    was_locked: bool,
 }
 
-impl SecureDevice {
-    pub fn new(handle: Handle, mut device: impl SecureProtocol + 'static) -> uefi::Result<Self> {
+impl<P: SecureProtocol> SecureDevice<P> {
+    pub fn new(mut device: P) -> crate::Result<Self, P::Error> {
         let info = recv_info(&mut device)?;
+        tracing::debug!(?info);
         let is_eprise = info.enterprise.is_some();
         let com_id = match info.enterprise.or(info.opal_v2) {
             Some(x) => x,
-            None => return Err(Status::UNSUPPORTED.into()),
+            None => super::UnsupportedSnafu.fail()?,
         }
         .base_com_id;
         Ok(Self {
-            device: Box::new(device),
-            handle,
+            device,
             com_id,
             is_eprise,
+            was_locked: info.locking.map_or(false, |l| l.contains(LockingFlags::LOCKED)),
         })
     }
 
-    pub fn reconnect_controller(&self, st: &mut SystemTable<Boot>) -> uefi::Result {
-        st.boot_services()
-            .disconnect_controller(self.handle, None, None)?;
-        st.boot_services()
-            .connect_controller(self.handle, None, None, true)?;
+    /// whether the SecureDevice was locked upon it's creation
+    pub fn was_locked(&self) -> bool {
+        self.was_locked
+    }
+
+    pub fn reconnect_controller(&mut self) -> crate::Result<(), P::Error> {
+        self.device.reconnect_controller().context(super::IoSnafu)?;
         Ok(())
     }
 
@@ -102,11 +106,11 @@ impl SecureDevice {
         self.is_eprise
     }
 
-    pub fn proto(&mut self) -> &mut dyn SecureProtocol {
-        &mut *self.device
+    pub fn proto(&mut self) -> &mut P {
+        &mut self.device
     }
 
-    pub fn recv_locked(&mut self) -> uefi::Result<bool> {
+    pub fn recv_locked(&mut self) -> crate::Result<bool, P::Error> {
         Ok(recv_info(self.proto())?
             .locking
             .map_or(false, |locking| {
@@ -116,23 +120,21 @@ impl SecureDevice {
 }
 
 /// Level 0 discovery subset
-fn recv_info(proto: &mut dyn SecureProtocol) -> uefi::Result<SecureDeviceInfo> {
+fn recv_info<P: SecureProtocol>(proto: &mut P) -> crate::Result<SecureDeviceInfo, P::Error> {
     let mut device_info = SecureDeviceInfo {
         locking: None,
         opal_v2: None,
         enterprise: None,
     };
 
-    let mut buffer = unsafe { crate::util::alloc_uninit_aligned(1024, proto.align()) };
+    let mut buffer = crate::util::alloc_aligned(1024, proto.align());
 
     // level 0 discovery
-    unsafe { proto.secure_recv(1, 1, buffer.as_mut()) }?;
-
-    let buffer = unsafe { buffer.assume_init() };
+    unsafe { proto.secure_recv(1, 1, buffer.as_mut()) }.context(super::IoSnafu)?;
 
     // check the version for sanity
     if buffer[4..8] != [0, 0, 0, 1] {
-        return Err(Status::INCOMPATIBLE_VERSION.into());
+        return Err(crate::Error::IncompatibleVersion);
     }
 
     // ignore the rest of the header

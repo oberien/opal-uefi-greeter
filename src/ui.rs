@@ -9,7 +9,7 @@ use uefi::table::runtime::ResetType;
 use crate::{Result, Context, util};
 
 /// options is a Vec<(selectable, String)>; returns the chosen index within the options-vec
-pub fn choose(st: &mut SystemTable<Boot>, options: &Vec<(bool, String)>) -> Result<usize> {
+pub fn choose(st: &SystemTable<Boot>, options: &Vec<(bool, String)>) -> Result<usize> {
     consume_old_keypresses(st)?;
 
     fn next_selectable<T>(current: usize, options: &[(bool, T)], rev: bool) -> usize {
@@ -40,6 +40,8 @@ pub fn choose(st: &mut SystemTable<Boot>, options: &Vec<(bool, String)>) -> Resu
     let output: String = options.iter()
         .flat_map(|(_, option)| ["  ", option, "\r\n"])
         .collect();
+
+    let mut st = unsafe { st.unsafe_clone() };
     st.stdout().write_str(&output).unwrap();
 
     let next_row = st.stdout().cursor_position().1;
@@ -56,7 +58,7 @@ pub fn choose(st: &mut SystemTable<Boot>, options: &Vec<(bool, String)>) -> Resu
         st.stdout().write_char('>').unwrap();
 
         loop {
-            match key(st)? {
+            match key(&st)? {
                 Key::Special(ScanCode::DOWN) => {
                     chosen = next_selectable(chosen, options, false);
                     break;
@@ -77,15 +79,16 @@ pub fn choose(st: &mut SystemTable<Boot>, options: &Vec<(bool, String)>) -> Resu
     }
 }
 
-pub fn password(st: &mut SystemTable<Boot>) -> Result<String> {
+pub fn password(st: &SystemTable<Boot>) -> Result<String> {
     consume_old_keypresses(st)?;
     read(st, Some('*'))
 }
-pub fn line(st: &mut SystemTable<Boot>) -> Result<String> {
+pub fn line(st: &SystemTable<Boot>) -> Result<String> {
     consume_old_keypresses(st)?;
     read(st, None)
 }
-fn consume_old_keypresses(st: &mut SystemTable<Boot>) -> Result<()> {
+fn consume_old_keypresses(st: &SystemTable<Boot>) -> Result<()> {
+    let mut st = unsafe { st.unsafe_clone() };
     // yield to let UEFI queue all stale key events
     util::sleep(Duration::from_millis(10));
     loop {
@@ -97,7 +100,8 @@ fn consume_old_keypresses(st: &mut SystemTable<Boot>) -> Result<()> {
 
     Ok(())
 }
-pub fn key(st: &mut SystemTable<Boot>) -> Result<Key> {
+pub fn key(st: &SystemTable<Boot>) -> Result<Key> {
+    let mut st = unsafe { st.unsafe_clone() };
     let mut wait_for_key = [unsafe { st.stdin().wait_for_key_event().unsafe_clone() }];
 
     loop {
@@ -109,7 +113,7 @@ pub fn key(st: &mut SystemTable<Boot>) -> Result<Key> {
         }
     }
 }
-fn read(st: &mut SystemTable<Boot>, replacement_char: Option<char>) -> Result<String> {
+fn read(st: &SystemTable<Boot>, replacement_char: Option<char>) -> Result<String> {
     let mut data = String::with_capacity(32);
     loop {
         match key(st)? {
@@ -134,14 +138,15 @@ fn read(st: &mut SystemTable<Boot>, replacement_char: Option<char>) -> Result<St
             }
             Key::Special(ScanCode::ESCAPE) => {
                 st.runtime_services()
-                    .reset(ResetType::Shutdown, Status::SUCCESS, None)
+                    .reset(ResetType::SHUTDOWN, Status::SUCCESS, None)
             }
             _ => {}
         }
     }
 }
 
-fn write_char(st: &mut SystemTable<Boot>, ch: u16) -> Result {
+fn write_char(st: &SystemTable<Boot>, ch: u16) -> Result {
+    let mut st = unsafe { st.unsafe_clone() };
     let str = &[ch, 0];
     st.stdout()
         .output_string(unsafe { CStr16::from_u16_with_nul_unchecked(str) })

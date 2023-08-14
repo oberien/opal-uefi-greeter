@@ -1,10 +1,5 @@
-use crate::{
-    low_level::opal::{
-        tiny_atom, token, OpalHeader, PacketHeader, SimpleToken, SubpacketHeader, Token,
-        TokenStream, BS8,
-    },
-    token_list, tokens,
-};
+use crate::{tokens, token_list};
+use crate::defs::{tiny_atom, token, OpalHeader, PacketHeader, SimpleToken, SubpacketHeader, Token, TokenStream, BS8};
 use alloc::{borrow::ToOwned, vec::Vec};
 use core::mem::{size_of, size_of_val};
 
@@ -126,7 +121,7 @@ impl OpalResponse {
             pos += token_len as usize;
         }
 
-        log::trace!("parsed tokens: {:X?}", tokens);
+        //log::trace!("parsed tokens: {:X?}", tokens);
 
         Self { header, tokens }
     }
