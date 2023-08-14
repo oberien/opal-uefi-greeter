@@ -12,7 +12,7 @@ use core::{
     slice,
 };
 use uefi::{
-    proto::{device_path::DevicePath},
+    proto::device_path::DevicePath,
     Event, Status,
 };
 
@@ -24,7 +24,7 @@ pub struct NvmExpressPassthru {
         this: &NvmExpressPassthru,
         namespace_id: u32,
         packet: &mut CommandPacket,
-        event: Event,
+        event: Option<Event>,
     ) -> Status,
     get_next_namespace:
         unsafe extern "efiapi" fn(this: &NvmExpressPassthru, namespace_id: &mut u32) -> Status,
@@ -35,7 +35,7 @@ pub struct NvmExpressPassthru {
     ) -> Status,
     get_namespace: unsafe extern "efiapi" fn(
         this: &NvmExpressPassthru,
-        device_path: &DevicePath,
+        device_path: *const FfiDevicePath,
         namespace_id: &mut u32,
     ) -> Status,
 }
@@ -50,14 +50,14 @@ impl NvmExpressPassthru {
         target: SendTarget,
         packet: &mut CommandPacket<'b>,
     ) -> uefi::Result<NvmeCompletion> {
-        self.send_async(target, packet, core::mem::zeroed())
+        self.send_async(target, packet, None)
     }
 
     pub unsafe fn send_async<'a, 'b: 'a>(
         &'a mut self,
         target: SendTarget,
-        mut packet: &mut CommandPacket<'b>,
-        event: Event,
+        packet: &mut CommandPacket<'b>,
+        event: Option<Event>,
     ) -> uefi::Result<NvmeCompletion> {
         let id = match target {
             SendTarget::Controller => 0,
@@ -99,7 +99,7 @@ impl NvmExpressPassthru {
 
     pub fn get_namespace(&self, device_path: &DevicePath) -> uefi::Result<NamespaceId> {
         let mut namespace_id = 0;
-        unsafe { (self.get_namespace)(self, device_path, &mut namespace_id) }
+        unsafe { (self.get_namespace)(self, device_path.as_ffi_ptr(), &mut namespace_id) }
             .to_result_with_val(|| unsafe { NamespaceId::new(namespace_id) })
     }
 }

@@ -70,6 +70,10 @@ impl<P: SecureProtocol> OpalDrive<P> {
         let mut session = OpalSession::start(&mut self.dev, uid::OPAL_LOCKINGSP, uid::OPAL_ADMIN1, Some(&hash))?;
         session.set_locking_range(0, defs::LockingState::ReadWrite)?;
         session.set_mbr_done(true)?;
+
+        drop(session);
+        self.dev.reconnect_controller()?;
+
         Ok(())
     }
 }

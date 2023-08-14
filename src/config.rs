@@ -80,6 +80,8 @@ fn deserialize_stdin<'de, D: Deserializer<'de>>(deserializer: D) -> Result<(), D
 #[derive(Debug, serde::Deserialize)]
 pub struct File {
     pub partition: String,
+    #[serde(default)]
+    pub extra_partitions: Vec<String>,
     pub file: String,
 }
 

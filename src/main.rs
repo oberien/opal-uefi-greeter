@@ -9,8 +9,10 @@ extern crate alloc;
 // make sure to link this
 extern crate rlibc;
 
+use alloc::boxed::Box;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
+use either::Either;
 use low_level::ata_passthru::{AtaPassthru, AtaProtocol};
 use opal::PasswordOrRaw;
 use uefi::proto::device_path::text::{DisplayOnly, AllowShortcuts};
@@ -65,6 +67,8 @@ fn main(image_handle: Handle, mut st: SystemTable<Boot>) -> Status {
         log::error!("Failed to initialize UEFI services");
     }
 
+
+    /*
     match probe_sata_disks(&st) {
         Ok(()) => {
             log::info!("successfully terminated");
@@ -73,6 +77,7 @@ fn main(image_handle: Handle, mut st: SystemTable<Boot>) -> Status {
             log::error!("error during execution: {err}");
         }
     }
+    */
 
     let exit = |st: &SystemTable<Boot>| {
         let _ = ui::line(st);
@@ -80,7 +85,6 @@ fn main(image_handle: Handle, mut st: SystemTable<Boot>) -> Status {
         .reset(ResetType::COLD, Status::SUCCESS, None)
     };
 
-    /*
     let config: Config = match config::load(image_handle, &mut st) {
         Ok(config) => config,
         Err(err) => {
@@ -98,7 +102,6 @@ fn main(image_handle: Handle, mut st: SystemTable<Boot>) -> Status {
            }
        }
     }
-    */
 
     exit(&mut st)
 }
@@ -107,6 +110,13 @@ fn run(image_handle: Handle, st: &SystemTable<Boot>, config: &Config) -> Result 
     // set size of console
     config_stdout(st).context("can't configure stdout")?;
     log::trace!("configured stdout");
+
+    log::info!("finding random esp path");
+    if let Err(e) = find_random_esp_path(&st) {
+        log::error!("{e}");
+    }
+    log::info!("found random esp path");
+
     // disable watchdog
     st.boot_services().set_watchdog_timer(0, 0x31337, None)
         .context("error disabling 5min reboot watchdog")?;
@@ -159,18 +169,8 @@ fn run(image_handle: Handle, st: &SystemTable<Boot>, config: &Config) -> Result 
     Ok(())
 }
 
-fn probe_sata_disks(st: &SystemTable<Boot>) -> Result<()> {
-    for (i, (blockio_handle, start_lba, end_lba)) in block_devices(st)?.into_iter().enumerate() {
-        log::debug!("probing blockio #{i} {start_lba:#x} - {end_lba:#x}");
 
-        if let Err(e) = try_get_ata_device(st, blockio_handle) {
-            log::error!("error: {e}");
-        }
-    }
-    Ok(())
-}
-
-fn try_get_ata_device(st: &SystemTable<Boot>, blockio_handle: Handle) -> Result<Option<()>> {
+fn try_get_ata_device(st: &SystemTable<Boot>, blockio_handle: Handle) -> Result<Option<opal::OpalDrive<AtaProtocol<'_>>>> {
     let params = OpenProtocolParams { handle: blockio_handle, agent: st.boot_services().image_handle(), controller: None };
     let device_path = unsafe {
         st
@@ -194,17 +194,9 @@ fn try_get_ata_device(st: &SystemTable<Boot>, blockio_handle: Handle) -> Result<
                 .context("error creating AtaPassthru handle")?;
 
             let proto = AtaProtocol::try_make(nvme, locate_path, st, blockio_handle)?;
-            let mut opal = opal::OpalDrive::new(proto).map_err(|e| Error::new(e, "error opening opal"))?;
-            log::info!("was locked = {}", opal.was_locked());
+            let opal = opal::OpalDrive::new(proto).map_err(|e| Error::new(e, "error opening opal"))?;
 
-            if opal.was_locked() {
-                let mut st = unsafe { st.unsafe_clone() };
-                st.stdout().write_str(&format!("Password for keyslot {}: ", String::from_utf8_lossy(opal.serial()))).unwrap();
-                let pwd = ui::password(&st)?.into_bytes();
-                opal.unlock(PasswordOrRaw::Password(&pwd)).map_err(|e| Error::new(e, "error unlocking opal"))?;
-            }
-            //nvme.identify().map_err(|e| Error::new_from_uefi(e, "identify error"))?;
-            Ok(Some(()))
+            Ok(Some(opal))
         },
         Err(_) => Ok(None),
     }
@@ -216,15 +208,23 @@ fn handle_unlock_configured_opal_drives(st: &SystemTable<Boot>, config: &Config)
         log::debug!("probing blockio #{i} {start_lba:#x} - {end_lba:#x}");
 
         // probe OPAL
-        let nvme = match try_get_nvme_device(st, blockio_handle)? {
-            Some(nvme) => nvme,
-            None => continue,
+        let mut dev = match try_get_nvme_device(st, blockio_handle)? {
+            Some(nvme) => Either::Left(nvme),
+            None => match try_get_ata_device(st, blockio_handle)? {
+                Some(ata) => Either::Right(ata),
+                None => continue,
+            },
         };
 
-        let serial = core::str::from_utf8(nvme.serial_num())
-            .context("can't convert NVMe serial number to UTF8")?
+        let serial = match &mut dev {
+            Either::Left(nvme) => nvme.serial_num(),
+            Either::Right(ata) => ata.serial(),
+        };
+
+        let serial = core::str::from_utf8(serial)
+            .context("can't convert disk serial number to UTF8")?
             .trim();
-        log::debug!("found nvme with serial: `{}`", serial);
+        log::debug!("found disk with serial: `{}`", serial);
 
         let partition = match config.partitions.values().find(|part| part.uuid == serial) {
             Some(partition) => partition,
@@ -234,13 +234,68 @@ fn handle_unlock_configured_opal_drives(st: &SystemTable<Boot>, config: &Config)
         // decrypt
         let keyslot = partition.keyslot.as_deref().unwrap();
         let keyslot = &config.keyslots[keyslot];
-        unlock_opal(st, blockio_handle, nvme, config, keyslot)?;
+        match dev {
+            Either::Left(nvme) => unlock_opal(st, opal::OpalDrive::new(RestartableNvmeDevice::new(&nvme, st, blockio_handle)).map_err(|e| Error::new(e, "open opal"))?, config, keyslot)?,
+            Either::Right(ata) => unlock_opal(st, ata, config, keyslot)?,
+        }
     }
     Ok(())
 }
 
+fn find_boot_partition(st: &SystemTable<Boot>) -> Result<Option<Handle>> {
+    log::info!("reconnecting all controllers to hopefully make ParitionInfo show up");
+    for (blockio_handle, _, _) in block_devices(st)? {
+        let _ = st.boot_services().disconnect_controller(blockio_handle, None, None);
+        if let Err(e) = st.boot_services().connect_controller(blockio_handle, None, None, true) {
+            log::error!("rc error {e}");
+        }
+    }
+    log::info!("done with rc");
+
+    let mut res = None;
+    for handle in st
+        .boot_services()
+        .find_handles::<PartitionInfo>()
+        .map_err(|e| Error::new_from_uefi(e, "list partitions"))?
+    {
+        log::trace!("FBP iter");
+        let pi = st.boot_services().open_protocol_exclusive::<PartitionInfo>(handle)
+            .map_err(|e| Error::new_from_uefi(e, "open partinfo"))?;
+
+        match pi.gpt_partition_entry() {
+            Some(gpt) if { gpt.partition_type_guid } == GptPartitionType::EFI_SYSTEM_PARTITION => {
+                if res.replace(handle).is_some() {
+                    log::error!("multiple ESPs found :(");
+                    return Ok(None);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    Ok(res)
+}
+fn find_random_esp_path(st: &SystemTable<Boot>) -> Result<Option<Box<DevicePath>>> {
+    let Some(part) = find_boot_partition(st)? else { return Ok(None) };
+    let device_path = st
+        .boot_services()
+        .open_protocol_exclusive::<DevicePath>(part)
+        .context("can't get DevicePath of BlockIO-Handle")?;
+
+    let dp = device_path.to_string(st.boot_services(), DisplayOnly(true), AllowShortcuts(false))
+        .map_err(|e| Error::new_without_source(format!("devicepath print error: {e}")))?.unwrap();
+    log::info!("esp dp = {dp}");
+
+    Ok(Some(device_path.to_boxed()))
+}
+
 fn handle_boot_entry(st: &SystemTable<Boot>, image_handle: Handle, config: &Config, boot_entry: &BootEntry) -> Result<()> {
     let BootEntry { name, file: efi_file, initrd, additional_initrd_files, options, default } = boot_entry;
+
+    for part in &efi_file.extra_partitions {
+        let partitions = [&config.partitions[part]];
+        let _ = find_read_file(st, config, &partitions, &efi_file.file);
+    }
 
     let efi_image = resolve_and_read_file(st, config, efi_file)?;
     if efi_image.get(0..2) != Some(&[0x4d, 0x5a]) {
@@ -253,11 +308,14 @@ fn handle_boot_entry(st: &SystemTable<Boot>, image_handle: Handle, config: &Conf
         None
     };
 
+    let dev_path = find_random_esp_path(st)?;
+
     // LoadedImage
 
+    let file_path = dev_path.as_ref().map(|x| x.as_ref());
     let loaded_image_handle = st
         .boot_services()
-        .load_image(image_handle, LoadImageSource::FromBuffer { file_path: None, buffer: &efi_image })
+        .load_image(image_handle, LoadImageSource::FromBuffer { file_path, buffer: &efi_image })
         .context("can't get handle to new LoadedImage-to-boot")?;
     let mut loaded_image = st
         .boot_services()
@@ -335,6 +393,7 @@ fn resolve_and_read_file(st: &SystemTable<Boot>, config: &Config, file: &File) -
             None => break,
         }
     }
+
     partitions.reverse();
     let res = find_read_file(st, config, &partitions, &file.file);
     log::info!("fetched `{}` from `{}`", file.file, file.partition);
@@ -362,7 +421,7 @@ fn try_get_nvme_device(st: &SystemTable<Boot>, blockio_handle: Handle) -> Result
         .boot_services()
         .open_protocol_exclusive::<DevicePath>(blockio_handle)
         .context("can't get DevicePath of BlockIO-Handle")?;
-    let device_path = unsafe { &mut &*device_path };
+    let device_path = &mut &*device_path;
 
     let nvme_passthrough_handle = st.boot_services().locate_device_path::<NvmExpressPassthru>(device_path);
     match nvme_passthrough_handle {
@@ -380,8 +439,9 @@ fn try_get_nvme_device(st: &SystemTable<Boot>, blockio_handle: Handle) -> Result
 }
 
 /// returns if it was already unlocked
-fn unlock_opal(st: &SystemTable<Boot>, blockio_handle: Handle, nvme: NvmeDevice, config: &Config, keyslot: &Keyslot) -> Result<()> {
-    let mut secure_device = opal::OpalDrive::new(RestartableNvmeDevice::new(&nvme, st, blockio_handle)).unwrap();
+fn unlock_opal<P: opal::SecureProtocol>(st: &SystemTable<Boot>, mut secure_device: opal::OpalDrive<P>, config: &Config, keyslot: &Keyslot) -> Result<()>
+where opal::Error<P::Error>: Into<ErrorSource>
+{
     if !secure_device.was_locked() {
         return Ok(());
     }
@@ -411,29 +471,7 @@ fn unlock_opal(st: &SystemTable<Boot>, blockio_handle: Handle, nvme: NvmeDevice,
         }
         cached = Cache::Discard;
     }
-    todo!();
-    /*
-    let mut secure_device = SecureDevice::new(blockio_handle, nvme)
-        .context("error creating SecureDevice (OPAL) from NvmeDevice")?;
-    if !secure_device.recv_locked().context("error trying to find out if the NVMe device is locked")? {
-        return Ok(());
-    }
-    let mut cached = Cache::Cached;
-    loop {
-        let password = get_password_of_keyslot(st, config, keyslot, cached)?;
-        let password_or_raw = match keyslot.source {
-            KeyslotSource::Stdin => PasswordOrRaw::Password(&password),
-            KeyslotSource::File(_) => PasswordOrRaw::Raw(&password),
-        };
-        match unlock_opal::try_unlock_device(st, &mut secure_device, password_or_raw) {
-            Ok(Ok(())) => break,
-            Ok(Err(())) => log::error!("Invalid Password, try again!"),
-            Err(e) => return Err(e),
-        }
-        cached = Cache::Discard;
-    }
     Ok(())
-    */
 }
 
 fn find_read_file(st: &SystemTable<Boot>, config: &Config, mut partitions: &[&Partition], file: &str) -> Result<Vec<u8>> {
@@ -452,9 +490,33 @@ fn find_read_file(st: &SystemTable<Boot>, config: &Config, mut partitions: &[&Pa
                 if partitions[0].keyslot.is_some() {
                     let keyslot = partitions[0].keyslot.as_deref().unwrap();
                     let keyslot = &config.keyslots[keyslot];
-                    unlock_opal(st, blockio_handle, nvme, config, keyslot)?;
+                    let secure_device = opal::OpalDrive::new(RestartableNvmeDevice::new(&nvme, st, blockio_handle)).unwrap();
+                    unlock_opal(st, secure_device, config, keyslot)?;
                 }
                 partitions = &partitions[1..];
+                if partitions.is_empty() {
+                    return Err(Error::new_without_source("out of partitions"));
+                }
+            }
+        }
+
+        if let Some(mut ata) = try_get_ata_device(st, blockio_handle)? {
+            let serial = core::str::from_utf8(ata.serial())
+                .context("can't convert ATA serial number to UTF8")?
+                .trim();
+            log::debug!("found ATA with serial: `{}`", serial);
+
+            if partitions[0].uuid == serial {
+                // decrypt
+                if partitions[0].keyslot.is_some() {
+                    let keyslot = partitions[0].keyslot.as_deref().unwrap();
+                    let keyslot = &config.keyslots[keyslot];
+                    unlock_opal(st, ata, config, keyslot)?;
+                }
+                partitions = &partitions[1..];
+                if partitions.is_empty() {
+                    return Err(Error::new_without_source("out of partitions"));
+                }
             }
         }
 
