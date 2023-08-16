@@ -121,7 +121,7 @@ impl OpalResponse {
             pos += token_len as usize;
         }
 
-        //log::trace!("parsed tokens: {:X?}", tokens);
+        tracing::trace!("parsed tokens: {:X?}", tokens);
 
         Self { header, tokens }
     }

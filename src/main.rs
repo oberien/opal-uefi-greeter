@@ -68,17 +68,6 @@ fn main(image_handle: Handle, mut st: SystemTable<Boot>) -> Status {
     }
 
 
-    /*
-    match probe_sata_disks(&st) {
-        Ok(()) => {
-            log::info!("successfully terminated");
-        }
-        Err(err) => {
-            log::error!("error during execution: {err}");
-        }
-    }
-    */
-
     let exit = |st: &SystemTable<Boot>| {
         let _ = ui::line(st);
         st.runtime_services()
@@ -110,12 +99,6 @@ fn run(image_handle: Handle, st: &SystemTable<Boot>, config: &Config) -> Result 
     // set size of console
     config_stdout(st).context("can't configure stdout")?;
     log::trace!("configured stdout");
-
-    log::info!("finding random esp path");
-    if let Err(e) = find_random_esp_path(&st) {
-        log::error!("{e}");
-    }
-    log::info!("found random esp path");
 
     // disable watchdog
     st.boot_services().set_watchdog_timer(0, 0x31337, None)
