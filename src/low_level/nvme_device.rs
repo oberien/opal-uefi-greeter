@@ -1,15 +1,23 @@
 use alloc::vec::Vec;
+use snafu::Snafu;
+use uefi::table::{SystemTable, Boot};
 use core::mem::MaybeUninit;
 
-use uefi::Status;
+use uefi::{Status, StatusExt, Handle};
 
 use crate::low_level::nvme_passthru::{self, Command, CommandPacket, NvmExpressPassthru, QueueType, SendTarget};
-use crate::low_level::secure_device::SecureProtocol;
+use opal::SecureProtocol;
 
 pub struct NvmeDevice {
     passthru: *mut NvmExpressPassthru,
     align: usize,
     serial_num: Vec<u8>,
+}
+
+pub struct RestartableNvmeDevice<'a> {
+    dev: &'a NvmeDevice,
+    st: &'a SystemTable<Boot>,
+    handle: Handle,
 }
 
 impl NvmeDevice {
@@ -43,7 +51,8 @@ fn recv_serial_num(passthru: *mut NvmExpressPassthru) -> uefi::Result<Vec<u8>> {
 
     unsafe { passthru.send(SendTarget::Controller, &mut packet) }?;
 
-    let serial_num = unsafe { MaybeUninit::slice_assume_init_ref(&data[4..24]) };
+    let serial_num = unsafe { core::slice::from_raw_parts(data.as_ptr().offset(4) as *const u8, 20) };
+    //let serial_num = unsafe { MaybeUninit::slice_assume_init_ref(&data[4..24]) };
     Ok(serial_num.to_vec())
 }
 
@@ -73,34 +82,62 @@ unsafe fn secure_protocol(
     );
     (*passthru).send(SendTarget::Controller, &mut packet)?;
 
-    Status::SUCCESS.into()
+    Status::SUCCESS.to_result()
 }
 
-impl SecureProtocol for NvmeDevice {
-    unsafe fn secure_send(&mut self, protocol: u8, com_id: u16, data: &mut [u8]) -> uefi::Result {
+#[derive(Debug, Snafu)]
+pub struct UefiError {
+    pub error: uefi::Error<()>,
+}
+
+impl<'a> RestartableNvmeDevice<'a> {
+    pub fn new(dev: &'a NvmeDevice, st: &'a SystemTable<Boot>, handle: Handle) -> Self {
+        Self { dev, st, handle }
+    }
+}
+impl<'a> SecureProtocol for RestartableNvmeDevice<'a> {
+    type Error = UefiError;
+
+    unsafe fn secure_send(&mut self, protocol: u8, com_id: u16, data: &mut [u8]) -> Result<(), UefiError> {
         secure_protocol(
-            self.passthru,
+            self.dev.passthru,
             Direction::Send,
             protocol,
             com_id,
             core::slice::from_raw_parts_mut(data.as_mut_ptr() as _, data.len()),
-        )
+        ).map_err(|error| UefiError { error })
     }
 
     unsafe fn secure_recv(
         &mut self,
         protocol: u8,
         com_id: u16,
-        buffer: &mut [MaybeUninit<u8>],
-    ) -> uefi::Result {
-        secure_protocol(self.passthru, Direction::Recv, protocol, com_id, buffer)
+        buffer: &mut [u8],
+    ) -> Result<(), UefiError> {
+        secure_protocol(
+            self.dev.passthru,
+            Direction::Recv,
+            protocol,
+            com_id,
+            core::slice::from_raw_parts_mut(buffer.as_mut_ptr() as _, buffer.len()),
+        ).map_err(|error| UefiError { error })
     }
 
     fn align(&self) -> usize {
-        self.align
+        self.dev.align
     }
 
     fn serial_num(&self) -> &[u8] {
-        &self.serial_num
+        &self.dev.serial_num
+    }
+
+    fn reconnect_controller(&mut self) -> Result<(), Self::Error> {
+        self.st.boot_services()
+            .disconnect_controller(self.handle, None, None)
+            .map_err(|error| UefiError { error })?;
+        self.st.boot_services()
+            .connect_controller(self.handle, None, None, true)
+            .map_err(|error| UefiError { error })?;
+        Ok(())
     }
 }

@@ -1,5 +1,8 @@
 use alloc::vec::Vec;
+use uefi::StatusExt;
 use uefi::proto::device_path::FfiDevicePath;
+use uefi::proto::unsafe_protocol;
+use uefi_raw::newtype_enum;
 use core::mem::MaybeUninit;
 
 use bitflags::bitflags;
@@ -9,14 +12,11 @@ use core::{
     slice,
 };
 use uefi::{
-    data_types::unsafe_guid,
-    newtype_enum,
-    proto::{device_path::DevicePath, Protocol},
+    proto::device_path::DevicePath,
     Event, Status,
 };
 
-#[unsafe_guid("52c78312-8edc-4233-98f2-1a1aa5e388a5")]
-#[derive(Protocol)]
+#[unsafe_protocol("52c78312-8edc-4233-98f2-1a1aa5e388a5")]
 #[repr(C)]
 pub struct NvmExpressPassthru {
     mode: *const Mode,
@@ -24,7 +24,7 @@ pub struct NvmExpressPassthru {
         this: &NvmExpressPassthru,
         namespace_id: u32,
         packet: &mut CommandPacket,
-        event: Event,
+        event: Option<Event>,
     ) -> Status,
     get_next_namespace:
         unsafe extern "efiapi" fn(this: &NvmExpressPassthru, namespace_id: &mut u32) -> Status,
@@ -35,7 +35,7 @@ pub struct NvmExpressPassthru {
     ) -> Status,
     get_namespace: unsafe extern "efiapi" fn(
         this: &NvmExpressPassthru,
-        device_path: &DevicePath,
+        device_path: *const FfiDevicePath,
         namespace_id: &mut u32,
     ) -> Status,
 }
@@ -50,14 +50,14 @@ impl NvmExpressPassthru {
         target: SendTarget,
         packet: &mut CommandPacket<'b>,
     ) -> uefi::Result<NvmeCompletion> {
-        self.send_async(target, packet, core::mem::zeroed())
+        self.send_async(target, packet, None)
     }
 
     pub unsafe fn send_async<'a, 'b: 'a>(
         &'a mut self,
         target: SendTarget,
-        mut packet: &mut CommandPacket<'b>,
-        event: Event,
+        packet: &mut CommandPacket<'b>,
+        event: Option<Event>,
     ) -> uefi::Result<NvmeCompletion> {
         let id = match target {
             SendTarget::Controller => 0,
@@ -66,14 +66,14 @@ impl NvmExpressPassthru {
         };
         let mut completion = Default::default();
         packet.completion = Some(&mut completion);
-        (self.pass_thru)(self, id, packet, event).into_with_val(|| completion)
+        (self.pass_thru)(self, id, packet, event).to_result_with_val(|| completion)
     }
 
     // shorthand assuming there is always at least one namespace on the NVMe controller
     pub fn first_namespace(&self) -> uefi::Result<NamespaceId> {
         let mut namespace_id = 0xFFFFFFFF;
         unsafe { (self.get_next_namespace)(self, &mut namespace_id) }
-            .into_with_val(|| NamespaceId(namespace_id))
+            .to_result_with_val(|| NamespaceId(namespace_id))
     }
 
     pub fn list_namespaces(&self) -> uefi::Result<Vec<NamespaceId>> {
@@ -84,7 +84,7 @@ impl NvmExpressPassthru {
             if status.is_success() {
                 result.push(NamespaceId(namespace_id));
             } else if status == Status::NOT_FOUND {
-                break Status::SUCCESS.into_with_val(|| result);
+                break Status::SUCCESS.to_result_with_val(|| result);
             } else {
                 break Err(status.into());
             }
@@ -94,13 +94,13 @@ impl NvmExpressPassthru {
     pub fn build_device_path(&self, namespace_id: NamespaceId) -> uefi::Result<&DevicePath> {
         let mut device_path = null_mut();
         unsafe { (self.build_device_path)(self, namespace_id.to_u32(), &mut device_path) }
-            .into_with_val(|| unsafe { DevicePath::from_ffi_ptr(device_path.as_mut().unwrap()) })
+            .to_result_with_val(|| unsafe { DevicePath::from_ffi_ptr(device_path.as_mut().unwrap()) })
     }
 
     pub fn get_namespace(&self, device_path: &DevicePath) -> uefi::Result<NamespaceId> {
         let mut namespace_id = 0;
-        unsafe { (self.get_namespace)(self, device_path, &mut namespace_id) }
-            .into_with_val(|| unsafe { NamespaceId::new(namespace_id) })
+        unsafe { (self.get_namespace)(self, device_path.as_ffi_ptr(), &mut namespace_id) }
+            .to_result_with_val(|| unsafe { NamespaceId::new(namespace_id) })
     }
 }
 

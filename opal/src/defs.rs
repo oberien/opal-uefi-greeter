@@ -1,8 +1,4 @@
 use alloc::vec::Vec;
-use uefi::newtype_enum;
-
-pub mod command;
-pub mod session;
 
 #[repr(C)]
 #[derive(Debug, Default)]
@@ -105,7 +101,7 @@ impl core::fmt::Debug for BS8 {
 macro_rules! simple_tokens {
     ($($name:ident = $value:literal;)*) => {
         $(
-            pub const $name: $crate::low_level::opal::SimpleToken = $crate::low_level::opal::SimpleToken {
+            pub const $name: $crate::defs::SimpleToken = $crate::defs::SimpleToken {
                 token: $value,
                 #[cfg(debug_assertions)]
                 name: stringify!($name),
@@ -117,7 +113,7 @@ macro_rules! simple_tokens {
 macro_rules! bytestrings {
     ($($name:ident = $value:literal;)*) => {
         $(
-            pub const $name: $crate::low_level::opal::BS8 = $crate::low_level::opal::BS8 {
+            pub const $name: $crate::defs::BS8 = $crate::defs::BS8 {
                 bytes: {
                     let u: u64 = $value;
                     u.to_be_bytes()
@@ -303,13 +299,13 @@ impl Token for LockingState {
     }
 }
 
-#[derive(Debug, Copy, Clone)]
+#[derive(Debug, Copy, Clone, snafu::Snafu)]
 pub enum OpalError {
-    Status(StatusCode),
+    Status { code: StatusCode },
     NoMethodStatus,
 }
 
-newtype_enum! {
+uefi_raw::newtype_enum! {
     #[must_use]
     pub enum StatusCode: u8 => {
         SUCCESS = 0x00,
@@ -346,7 +342,7 @@ pub trait Token: core::fmt::Debug {
 }
 
 #[derive(Debug)]
-pub struct TokenStream(Option<Vec<u8>>);
+pub struct TokenStream(pub Option<Vec<u8>>);
 
 impl TokenStream {
     pub fn empty() -> Self {
@@ -477,8 +473,8 @@ impl<N: Token, T: Token, R> TokensPush<N> for TokensCons<T, R> {
 macro_rules! token_list {
     ($($t:expr),* $(,)?) => {{
         #[allow(unused_imports)]
-        use $crate::low_level::opal::{Token, TokensPush};
-        $crate::low_level::opal::TokensNil $(.push($t))* .to_token_stream()
+        use $crate::defs::{Token, TokensPush};
+        $crate::defs::TokensNil $(.push($t))* .to_token_stream()
     }};
 }
 
@@ -486,19 +482,19 @@ macro_rules! token_list {
 macro_rules! token_name {
     ($k:expr, $v:expr $(,)?) => {{
         #[allow(unused_imports)]
-        use $crate::low_level::opal::Token;
-        $crate::low_level::opal::TokenName($k, $v).to_token_stream()
+        use $crate::defs::Token;
+        $crate::defs::TokenName($k, $v).to_token_stream()
     }};
 }
 
 #[macro_export]
 macro_rules! tokens {
-    () => { $crate::low_level::opal::TokenStream::empty() };
-    ($t:expr $(,)?) => { $crate::low_level::opal::Token::to_token_stream(&$t) };
+    () => { $crate::defs::TokenStream::empty() };
+    ($t:expr $(,)?) => { $crate::defs::Token::to_token_stream(&$t) };
     ($($t:expr),* $(,)?) => {{
         #[allow(unused_imports)]
-        use $crate::low_level::opal::{TokenList, TokensPush};
-        $crate::low_level::opal::TokensNil $(.push($t))* .to_bare_token_stream()
+        use $crate::defs::{TokenList, TokensPush};
+        $crate::defs::TokensNil $(.push($t))* .to_bare_token_stream()
     }};
 }
 
